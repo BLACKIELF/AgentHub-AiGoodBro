@@ -2060,8 +2060,8 @@ final class CodexProfileStore {
                     ? previousSnapshot?.availableResetCredits ?? snapshot.credits?.resetCredits
                     : snapshot.credits?.resetCredits,
                 resetCreditExpiries: mergesEqualObservation
-                    ? previousSnapshot?.resetCreditExpiries ?? snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt).sorted()
-                    : snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt).sorted(),
+                    ? previousSnapshot?.resetCreditExpiries ?? snapshot.credits?.resetCreditExpiries?.sorted()
+                    : snapshot.credits?.resetCreditExpiries?.sorted(),
                 creditBalance: mergesEqualObservation
                     ? previousSnapshot?.creditBalance ?? CreditBalancePresentation.normalizedBalance(snapshot.credits?.balance)
                     : CreditBalancePresentation.normalizedBalance(snapshot.credits?.balance),

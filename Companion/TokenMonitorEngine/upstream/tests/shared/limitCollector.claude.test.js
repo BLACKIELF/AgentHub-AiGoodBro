@@ -151,7 +151,7 @@ test('Claude Web source takes precedence and carries stable account metadata', a
   assert.equal(first.provider.accountKey, second.provider.accountKey);
   assert.equal(first.provider.accountEmail, 'owner@example.com');
   assert.equal(first.provider.accountName, 'Example Workspace');
-  assert.equal(first.provider.accountLabel, 'Max 20x');
+  assert.equal(first.provider.accountLabel, 'Ultra');
   assert.deepEqual(first.provider.windows.map((window) => window.kind), ['session', 'weekly']);
   // The pool is asked for, comes back unfunded, and so contributes no row.
   assert.equal(first.provider.balance, null);
@@ -1129,7 +1129,7 @@ test('Claude limits read Windows Credential Manager credentials when credential 
   assert.equal(provider.provider, 'claude');
   assert.equal(provider.status, 'ok');
   assert.equal(provider.source, 'oauth');
-  assert.equal(provider.accountLabel, 'Max 5x');
+  assert.equal(provider.accountLabel, 'Max');
   assert.equal(provider.windows[0].usedPercent, 12);
 });
 
@@ -1182,7 +1182,7 @@ test('Claude OAuth profile provides stable cross-device account identity and met
   assert.notEqual(mac.accountKey, other.accountKey);
   assert.equal(mac.accountEmail, 'owner@example.com');
   assert.equal(mac.accountName, 'Example Workspace');
-  assert.equal(mac.accountLabel, 'Max 5x');
+  assert.equal(mac.accountLabel, 'Max');
 });
 
 test('Claude OAuth profile failures never derive account identity from rotating credentials', async () => {
@@ -1458,7 +1458,7 @@ test('Claude successful OAuth keeps plan label without probing CLI', async () =>
 
   assert.equal(provider.source, 'oauth');
   assert.equal(provider.sourceDetail, '');
-  assert.equal(provider.accountLabel, 'Max 5x');
+  assert.equal(provider.accountLabel, 'Max');
   assert.equal(provider.windows[0].remainingPercent, 0);
   assert.equal(cliCalls, 0);
 });
@@ -1544,20 +1544,25 @@ test('Claude CLI usage preserves time-only resets in their own quota sections', 
   assert.equal(typeof weekly.resetsAt, 'string');
 });
 
-test('Claude CLI usage never borrows the weekly percentage for a missing session', () => {
-  assert.throws(
-    () => mapClaudeCliUsageToProvider([
-      'Current session',
-      'Current week',
-      '80% left',
-      'Resets Jul 22'
-    ].join('\n'), {
-      now: new Date('2026-07-15T00:00:00Z'),
-      updatedAt: '2026-07-15T00:00:00Z'
-    }),
-    (error) => error?.status === 'unavailable'
-      && error?.message === 'Claude CLI usage missing current session'
-  );
+test('Claude CLI usage keeps weekly quota without inventing a missing session', () => {
+  const provider = mapClaudeCliUsageToProvider([
+    'Current session',
+    'Current week',
+    '80% left',
+    'Resets Jul 22'
+  ].join('\n'), {
+    now: new Date('2026-07-15T00:00:00Z'),
+    updatedAt: '2026-07-15T00:00:00Z'
+  });
+  assert.deepEqual(provider.windows.map(window => window.kind), ['weekly']);
+  assert.equal(provider.windows[0].remainingPercent, 80);
+});
+
+test('Claude CLI usage rejects output without session or all-model weekly quota', () => {
+  for (const text of ['Plan: Ultra', '65% left', 'Current week (Sonnet only)\n65% left']) {
+    assert.throws(() => mapClaudeCliUsageToProvider(text),
+      error => error?.status === 'unavailable' && error?.message === 'Claude CLI usage missing quota');
+  }
 });
 
 test('Claude CLI usage never borrows Sonnet-only data for a missing all-model weekly window', () => {
@@ -1617,6 +1622,15 @@ test('Claude CLI usage carries account email and organization into the provider 
   assert.equal(provider.accountEmail, 'owner@example.com');
   assert.equal(provider.accountName, 'Example Team');
   assert.equal(provider.accountLabel, 'Max');
+});
+
+test('Claude CLI usage displays current names for legacy and current plan text', () => {
+  for (const [plan, accountLabel] of [
+    ['Max 5x', 'Max'], ['Max 20x', 'Ultra'], ['Max', 'Max'], ['Ultra', 'Ultra']
+  ]) {
+    const provider = mapClaudeCliUsageToProvider(`Current session\n95% left\nPlan: ${plan}`);
+    assert.equal(provider.accountLabel, accountLabel);
+  }
 });
 
 test('Claude CLI usage maps out-of-order PTY reset lines by window shape', () => {
@@ -2354,13 +2368,13 @@ test('a personal Pro account takes its plan from the organization capabilities',
   }), 'Pro');
 });
 
-test('a personal Max account keeps the rate limit tier refinement', async () => {
+test('a personal legacy Max 20x account displays Ultra', async () => {
   assert.equal(await personalPlanLabel({
     uuid: 'org-personal',
     name: 'Personal',
     capabilities: ['chat', 'claude_max'],
     rate_limit_tier: 'default_claude_max_20x'
-  }), 'Max 20x');
+  }), 'Ultra');
 });
 
 test('a membership from another organization never supplies the plan', async () => {
@@ -2389,11 +2403,11 @@ test('a membership from another organization never supplies the plan', async () 
       )
     }
   );
-  assert.equal(provider.accountLabel, 'Max 20x');
+  assert.equal(provider.accountLabel, 'Ultra');
   assert.equal(provider.accountName, 'Selected Max Org');
 });
 
-test('the Max variant comes from the rate limit tier, not the capability', async () => {
+test('the legacy Max 5x tier displays Max', async () => {
   // There is no `claude_max_5x` capability: claude.ai reports plain `claude_max`
   // for both variants and separates them on `rate_limit_tier`.
   assert.equal(await personalPlanLabel({
@@ -2401,7 +2415,7 @@ test('the Max variant comes from the rate limit tier, not the capability', async
     name: 'Personal',
     capabilities: ['chat', 'claude_max'],
     rate_limit_tier: 'default_claude_max_5x'
-  }), 'Max 5x');
+  }), 'Max');
 });
 
 async function planLabelFor(organization, seatTier) {
@@ -2501,4 +2515,29 @@ test('the prepaid TTL follows the limits refresh interval at twice its length', 
   nowMs += 61_000;
   await fetchClaudeLimits(options, deps);
   assert.equal(requests.filter((url) => url.includes('/prepaid/credits')).length, 1);
+});
+
+
+test('Claude weekly-only PTY usage completes before the probe deadline', { skip: process.platform === 'win32' }, async (t) => {
+  const fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aigoodbro-claude-weekly-'));
+  t.after(() => fs.rm(fixtureDir, { recursive: true, force: true }));
+  const command = path.join(fixtureDir, 'claude-fixture');
+  await fs.writeFile(command, "#!/bin/sh\ncat <<'USAGE'\nPlan: Ultra\nCurrent week (all models)\n65% left\nResets Jul 22\nUSAGE\nsleep 30\n", { mode: 0o700 });
+  const started = Date.now();
+  const provider = await fetchClaudeLimits({}, {
+    platform: process.platform,
+    env: { PATH: process.env.PATH, HOME: fixtureDir, TOKEN_MONITOR_CLAUDE_COMMAND: command },
+    now: () => Date.parse('2026-07-15T00:00:00Z'),
+    claudeCredentialPath: path.join(fixtureDir, 'missing-credentials.json'),
+    stat: async () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }); },
+    readMacKeychain: false,
+    isClaudeCliAuthenticated: async () => true,
+    claudeProbeDir: path.join(fixtureDir, 'probe'),
+    claudeCliTimeoutSeconds: 20,
+    claudeCliTimeoutMs: 13000
+  });
+  assert.ok(Date.now() - started < 13000, 'weekly completion must not wait for the timeout');
+  assert.equal(provider.accountLabel, 'Ultra');
+  assert.deepEqual(provider.windows.map(window => window.kind), ['weekly']);
+  assert.equal(provider.windows[0].remainingPercent, 65);
 });

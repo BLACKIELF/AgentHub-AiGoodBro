@@ -54,7 +54,7 @@ class ColdModuleCacheTests(unittest.TestCase):
             if unavailable:
                 ready.pop('Dir')
             responses = [json.dumps(metadata), json.dumps(ready)] if cold else [json.dumps(ready)]
-            target = directory / 'sdk' / pin['patches'][0]['target']
+            target = directory / 'sdk' / (pin['patches'][0]['target'] if pin['patches'] else 'go.mod')
             original_read = support.regular_bytes
 
             class ReachedVerifiedSource(Exception):

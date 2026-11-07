@@ -709,8 +709,18 @@ struct LocalCLIWorkspaceView: View {
     private func compactHomeQuotaWindow(_ window: LocalCLIQuotaWindow) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             CompactQuotaView(
-                title: window.label, remaining: 100 - window.usedPercent,
+                title: LocalCLIAccountPresentation.quotaTitle(kind: kind, window: window, language: language), remaining: 100 - window.usedPercent,
                 reset: window.resetsAt, isExpiry: window.isExpiry, horizontalDetails: compactHomeSummary)
+            if kind == .kimi, window.id == "monthly" {
+                let format = FloatingPointFormatStyle<Double>.number.precision(.fractionLength(0...2)).locale(language.locale)
+                Text(
+                    language.text(
+                        "已用 \(window.usedPercent.formatted(format))% · 剩余 \((100 - window.usedPercent).formatted(format))%",
+                        "Used \(window.usedPercent.formatted(format))% · Left \((100 - window.usedPercent).formatted(format))%")
+                )
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             if let amount = window.tokenAmountText {
                 Text(amount).font(.system(size: 10).monospacedDigit())
                     .lineLimit(1).minimumScaleFactor(0.85).help(amount)

@@ -82,9 +82,23 @@ struct KimiCLIQuotaFixture {
         try expect(monthlyCode.windows.map(\.id) == ["monthly", "monthly-code"], "monthly code is independent of total")
         try expect(monthlyCode.windows.map(\.usedPercent) == [25, 0], "monthly code actual zero is preserved")
         try expect(monthlyCode.windows[1].resetsAt != nil, "monthly code reset is preserved")
+        let subscriptionTotal = try LocalCLIQuotaReader.parseKimi(Data(
+            #"{"usages":{"limit_5h":{"used_ratio":0,"reset_time":"2026-11-06T18:39:00Z"},"limit_7d":{"used_ratio":0,"reset_time":"2026-11-12T17:39:00Z"},"limit_month_total":{"used_ratio":0.4939,"reset_time":"2026-11-23T17:39:00Z"},"limit_month_code":{"used_ratio":0}}}"#.utf8))
+        try expect(subscriptionTotal.windows.map(\.id) == ["monthly", "session", "weekly", "monthly-code"], "compact displays lead with the shared total while preserving Code windows")
+        let total = subscriptionTotal.windows[0]
+        try expect(abs(total.usedPercent - 49.39) < 0.000001 && abs((100 - total.usedPercent) - 50.61) < 0.000001, "subscription total preserves precise used and remaining percentages")
+        try expect(total.resetsAt == ISO8601DateFormatter().date(from: "2026-11-23T17:39:00Z"), "total keeps its own monthly reset, not the Code short-window date")
+        let wrappedTotal = try LocalCLIQuotaReader.parseKimi(Data(
+            #"{"data":{"usages":{"limit_month_total":{"used_ratio":null,"usedRatio":"0.4939","resetTime":"2026-11-23T17:39:00Z"}}}}"#.utf8))
+        try expect(wrappedTotal.windows.count == 1 && wrappedTotal.windows[0] == total,
+            "upstream-compatible data envelope and camel-case ratio/reset aliases preserve the same total")
+        let spentTotal = try LocalCLIQuotaReader.parseKimi(Data(
+            #"{"usages":{"limit_month_total":{"used_ratio":1.2}}}"#.utf8))
+        try expect(spentTotal.windows[0].usedPercent == 100, "a ratio over one is exhausted, never interpreted as a percent-scale value")
         let codeOnly = try LocalCLIQuotaReader.parseKimi(Data(
             #"{"usages":{"limit_month_code":{"used_ratio":0.5}}}"#.utf8))
         try expect(codeOnly.windows.count == 1 && codeOnly.windows[0].usedPercent == 50, "code-only pool accepted")
+        try expect(!codeOnly.windows.contains(where: { $0.id == "monthly" }), "Code-only response never manufactures a subscription total")
         let stringRatio = try LocalCLIQuotaReader.parseKimi(Data(
             #"{"usages":{"limit_month_code":{"used_ratio":"0.125"}}}"#.utf8))
         try expect(stringRatio.windows[0].usedPercent == 12.5, "official numeric-string ratio is accepted")
@@ -92,12 +106,12 @@ struct KimiCLIQuotaFixture {
             #"{"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":"100","used":"100","resetTime":"2026-10-06T13:23:46.915474Z"}}],"usages":{"limit_5h":{"used_ratio":0,"reset_time":"2026-10-06T13:23:46Z"},"limit_month_total":{"used_ratio":0.5531,"reset_time":"2026-10-22T14:26:29Z"},"limit_month_code":{"used_ratio":0,"reset_time":"2026-10-22T14:26:29Z"}}}"#
         )).load(profile: profile, now: now)
         try expect(contradictory.state == .available, "contradictory matching Kimi windows remain readable")
-        try expect(contradictory.windows.map(\.id) == ["session", "monthly", "monthly-code"], "actual returned monthly pools remain independent and no weekly pool is invented")
-        try expect(contradictory.windows[0].usedPercent == 100, "matching exhausted legacy session wins over zero ratio")
-        try expect(abs(contradictory.windows[1].usedPercent - 55.31) < 0.000001, "actual monthly total retained")
+        try expect(contradictory.windows.map(\.id) == ["monthly", "session", "monthly-code"], "actual returned monthly pools remain independent and no weekly pool is invented")
+        try expect(contradictory.windows[1].usedPercent == 100, "matching exhausted legacy session wins over zero ratio")
+        try expect(abs(contradictory.windows[0].usedPercent - 55.31) < 0.000001, "actual monthly total retained")
         let counterResetFormatter = ISO8601DateFormatter()
         counterResetFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        try expect(contradictory.windows[0].resetsAt == counterResetFormatter.date(from: "2026-10-06T13:23:46.915474Z"), "selected counter keeps its actual reset")
+        try expect(contradictory.windows[1].resetsAt == counterResetFormatter.date(from: "2026-10-06T13:23:46.915474Z"), "selected counter keeps its actual reset")
 
         func sessionPercent(ratio: Double, used: String = "90", reset: String?, duration: Int = 300) throws -> Double {
             var detail: [String: Any] = ["limit": "100", "used": used]

@@ -7,7 +7,8 @@ const {
   cleanProxyUrl,
   resolveProxyConfig,
   resolveProxyUrl,
-  createOutboundFetch
+  createOutboundFetch,
+  resetOutboundFetchCache
 } = require('../../src/shared/outboundFetch');
 
 test('cleanProxyUrl trims and strips matching quotes', () => {
@@ -115,4 +116,29 @@ test('createOutboundFetch deps.fetch override wins over proxy wiring', async () 
   const res = await fetchFn('https://example.test/');
   assert.equal(hits, 1);
   assert.equal(res.status, 204);
+});
+
+test('reset closes cached proxy dispatchers, tolerates failures, and creates a fresh dispatcher', async () => {
+  await resetOutboundFetchCache();
+  const agents = [];
+  class Dispatcher {
+    constructor() { this.closed = 0; agents.push(this); }
+    destroy() {
+      this.closed += 1;
+      if (agents.indexOf(this) === 0) return Promise.reject(new Error('already closed'));
+      return Promise.resolve();
+    }
+  }
+  const deps = { EnvHttpProxyAgent: Dispatcher, undiciFetch: async () => ({ ok: true }) };
+  createOutboundFetch({ HTTPS_PROXY: 'http://proxy.test:8001' }, deps);
+  createOutboundFetch({ HTTPS_PROXY: 'http://proxy.test:8001' }, deps);
+  createOutboundFetch({ HTTPS_PROXY: 'http://proxy.test:8002' }, deps);
+  assert.equal(agents.length, 2);
+  const results = await resetOutboundFetchCache();
+  assert.deepEqual(agents.map(agent => agent.closed), [1, 1]);
+  assert.deepEqual(results.map(result => result.status), ['rejected', 'fulfilled']);
+  createOutboundFetch({ HTTPS_PROXY: 'http://proxy.test:8001' }, deps);
+  assert.equal(agents.length, 3);
+  await resetOutboundFetchCache();
+  assert.deepEqual(agents.map(agent => agent.closed), [1, 1, 1]);
 });

@@ -65,8 +65,8 @@ def freeze(run):
         destination.write_bytes(data)
         manifest.append({"path": relative, "sha256": digest(data), "bytes": len(data)})
     module = (target / "Companion/LocalProxy/go.mod").read_text()
-    if "github.com/router-for-me/CLIProxyAPI/v8 v8.0.38" not in module:
-        raise RuntimeError("actual current Go runtime v8.0.38 is required")
+    if "github.com/router-for-me/CLIProxyAPI/v8 v8.0.58" not in module:
+        raise RuntimeError("actual current Go runtime v8.0.58 is required")
     save_json(run / "frozen-source-manifest.json", {"schemaVersion": 1, "files": manifest})
     return target, manifest
 
@@ -266,7 +266,7 @@ def main():
     matching = all(digest((ROOT / row["path"]).read_bytes()) == row["sha256"] for row in manifest)
     receipt = {"schemaVersion": 1, "ok": all(row["expectedOutcomeObserved"] for row in summaries),
                "cases": summaries, "sourceManifest": "frozen-source-manifest.json",
-               "sourceStillMatchesFrozenInputs": matching, "runtimeSDK": "CLIProxyAPI v8.0.38",
+               "sourceStillMatchesFrozenInputs": matching, "runtimeSDK": "CLIProxyAPI v8.0.58",
                "goBinarySHA256": digest(go_binary.read_bytes()), "realAccountsOrProviders": False,
                "networkBoundary": "127.0.0.1 only; Go dependencies offline",
                "productionFilesModifiedByFixture": False}

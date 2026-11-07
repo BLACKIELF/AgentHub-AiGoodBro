@@ -67,10 +67,10 @@ if args.stale_row_negative:
     assert frozen.count(needle) == 1
     frozen = frozen.replace(needle, "if !preserveDraft {\n                resetDrafts(to: savedState)\n            }")
 # Observe actual rendered state and control geometry without replacing any event handlers.
-summary_needle = "Text(summary).foregroundStyle(.secondary)"
+summary_needle = ".accessibilityValue(summary)"
 assert frozen.count(summary_needle) == 1
 frozen = frozen.replace(summary_needle,
-    "Text(PolicyEditorFixtureProbe.observe(summary: summary, dirty: dirty, saveFailed: saveFailed)).foregroundStyle(.secondary)")
+    ".accessibilityValue(PolicyEditorFixtureProbe.observe(summary: summary, dirty: dirty, saveFailed: saveFailed))")
 save_needle = "}.disabled(!enabled || !dirty || policy == nil).fixedSize()"
 assert frozen.count(save_needle) == 1
 frozen = frozen.replace(save_needle, save_needle + '.background(PolicyEditorFixtureBounds(name: "save"))')

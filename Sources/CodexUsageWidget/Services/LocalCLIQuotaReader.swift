@@ -763,25 +763,29 @@ extension LocalCLIQuotaReader {
     }
 
     static func parseKimi(_ data: Data) throws -> (plan: String?, windows: [LocalCLIQuotaWindow]) {
-        let root = try object(data)
+        let response = try object(data)
+        let root = (response["data"] as? [String: Any]) ?? response
         let plan = nonempty(root["planName"]) ?? nonempty(root["plan_name"])
         var windows: [LocalCLIQuotaWindow] = []
         // The current endpoint also returns named ratio pools. Keep all four
         // independent windows, including both monthly pools, and never fill a
-        // missing usage ratio with zero.
+        // missing usage ratio with zero. The shared monthly total leads compact
+        // displays; Code short windows do not represent the subscription total.
         if let rawPools = root["usages"], !(rawPools is NSNull) {
             guard let pools = rawPools as? [String: Any] else { throw LocalCLIReaderFailure.invalidResponse }
             for (key, id, label) in [
-                ("limit_5h", "session", "5-hour"), ("limit_7d", "weekly", "7-day"), ("limit_month_total", "monthly", "Monthly"),
+                ("limit_month_total", "monthly", "Total quota"),
+                ("limit_5h", "session", "5-hour"), ("limit_7d", "weekly", "7-day"),
                 ("limit_month_code", "monthly-code", "Monthly Code"),
             ] {
                 guard let raw = pools[key], !(raw is NSNull) else { continue }
                 guard let pool = raw as? [String: Any] else { throw LocalCLIReaderFailure.invalidResponse }
-                guard let rawRatio = pool["used_ratio"], !(rawRatio is NSNull) else { continue }
+                guard let rawRatio = [pool["used_ratio"], pool["usedRatio"]].compactMap({ $0 }).first(where: { !($0 is NSNull) }) else { continue }
                 guard let ratio = strictDouble(rawRatio, allowString: true), ratio >= 0 else { throw LocalCLIReaderFailure.invalidResponse }
                 windows.append(
                     LocalCLIQuotaWindow(
-                        id: id, label: label, usedPercent: min(1, ratio) * 100, resetsAt: parseDate(pool["reset_time"])))
+                        id: id, label: label, usedPercent: min(1, ratio) * 100,
+                        resetsAt: parseDate([pool["reset_time"], pool["resetTime"]].compactMap({ $0 }).first(where: { !($0 is NSNull) }))))
             }
         }
         let ratioPools = windows

@@ -68,7 +68,8 @@ enum Harness {
         if !value { print("FAIL " + name); throw TokenMonitorFailure.invalidResponse }
         print("PASS " + name)
     }
-    static func response(_ request: TokenMonitorRequest, reset: Bool = false, plan: String? = nil, weeklyOnly: Bool = false) throws -> TokenMonitorResponse {
+    static func response(_ request: TokenMonitorRequest, reset: Bool = false, completeCredits: Bool = false, plan: String? = nil, weeklyOnly: Bool = false,
+                         resetDates: Bool = true) throws -> TokenMonitorResponse {
         var provider: [String: TokenMonitorJSON] = ["provider": .string("codex"), "status": .string("ok"), "windows": .array([.object(["kind": .string("session"), "limitId": .string("codex"), "windowMinutes": .number(300), "usedPercent": .number(0)])])]
         if let plan { provider["planType"] = .string(plan) }
         if weeklyOnly {
@@ -76,7 +77,13 @@ enum Harness {
                 "kind": .string("weekly"), "limitId": .string("codex"),
                 "windowMinutes": .number(10080), "usedPercent": .number(0)])])
         }
-        if reset { provider["resetCredits"] = .object(["availableCount": .number(2)]) }
+        if reset {
+            var summary: [String: TokenMonitorJSON] = ["availableCount": .number(2)]
+            if resetDates { summary["expirations"] = .array([.string("2026-12-01T01:00:00Z"), .string("2026-11-20T02:30:00.000Z")]) }
+            provider["resetCredits"] = .object(summary)
+        }
+        if completeCredits { provider["credits"] = .object([
+            "hasCredits": .bool(true), "unlimited": .bool(false), "balance": .string("2240.36")]) }
         let value = TokenMonitorResponse(schemaVersion: 1, requestId: request.requestId,
             engine: .init(repository: "Javis603/token-monitor", commit: TokenMonitorResponse.commit, version: "fixture"),
             collectedAt: "2026-09-13T00:00:00Z", timezone: "UTC", status: .ok,
@@ -103,7 +110,7 @@ enum Harness {
         result = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages, managedProfile: profile)
         try check(result.quotaReadSucceeded && result.account?.planType == "prolite"
             && result.fiveHourQuota == nil && result.sevenDayQuota?.usedPercent == 0
-            && Harness.events == ["http"], "weekly-only Pro 5x keeps fresh machine plan without RPC")
+            && Harness.events == ["http", "rpc"], "weekly-only Pro 5x keeps fresh machine plan while backfilling balance")
         Harness.events = []; Harness.http = { try response($0, plan: "prolite", weeklyOnly: true) }
         Harness.rpc = {
             var value = CodexUsageReader.AppServerSnapshot()
@@ -116,7 +123,56 @@ enum Harness {
         Harness.rpc = { .init() }
         Harness.events = []; Harness.http = { try response($0, reset: true) }
         result = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages, managedProfile: profile)
-        try check(result.credits?.resetCredits == 2 && Harness.events == ["http"], "HTTP reset evidence avoids unconditional RPC")
+        try check(result.credits?.resetCredits == 2 && result.credits?.resetCreditExpiries?.count == 2
+            && result.credits?.balance == nil && Harness.events == ["http", "rpc"], "reset count and dates cannot mask a missing balance")
+        Harness.events = []; Harness.http = { try response($0, reset: true, completeCredits: true) }
+        result = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages, managedProfile: profile)
+        try check(result.credits?.balance == "2240.36" && result.credits?.resetCreditDetails == nil
+            && result.credits?.resetCreditExpiries?.count == 2 && Harness.events == ["http"],
+            "complete HTTP credit and expiry evidence avoids unnecessary RPC and synthetic card IDs")
+        Harness.events = []; Harness.http = { try response($0, reset: true) }
+        Harness.rpc = {
+            var value = CodexUsageReader.AppServerSnapshot()
+            value.account = AccountInfo(type: "chatgpt", planType: nil, emailPresent: true, email: "synthetic-identity")
+            value.quotaReadSucceeded = true
+            value.credits = CreditsInfo(hasCredits: true, unlimited: false, balance: "2240.36", resetCredits: nil, resetCreditDetails: nil)
+            return value
+        }
+        result = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages, managedProfile: profile)
+        try check(result.credits?.balance == "2240.36" && result.credits?.resetCredits == 2
+            && result.credits?.resetCreditExpiries?.count == 2 && result.auxiliaryReadStatus == .legacyRPC
+            && Harness.events == ["http", "rpc"], "same-identity RPC supplements balance without losing HTTP expiry dates")
+        let validRPC = Harness.rpc
+        Harness.events = []; Harness.rpc = {
+            var value = validRPC()
+            value.credits = CreditsInfo(hasCredits: true, unlimited: false, balance: "2240.36", resetCredits: 2, resetCreditDetails: [])
+            return value
+        }
+        result = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages, managedProfile: profile)
+        try check(result.credits?.resetCreditExpiries?.count == 2 && result.credits?.resetCreditDetails?.isEmpty == true,
+            "RPC with no detailed card dates retains same-count engine display dates without inventing identities")
+        Harness.events = []; Harness.rpc = {
+            var value = validRPC()
+            value.account = AccountInfo(type: "chatgpt", planType: nil, emailPresent: true, email: "synthetic-other")
+            return value
+        }
+        result = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages, managedProfile: profile)
+        try check(result.quotaReadSucceeded && result.credits?.balance == nil && result.credits?.resetCreditExpiries?.count == 2,
+            "another account's RPC balance is never merged into HTTP quota")
+        Harness.events = []; Harness.rpc = { var value = validRPC(); value.quotaReadSucceeded = false; return value }
+        result = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages, managedProfile: profile)
+        try check(result.credits?.balance == nil && result.credits?.resetCredits == 2,
+            "unconfirmed RPC quota cannot publish a spendable balance")
+        Harness.events = []; Harness.rpc = {
+            var value = validRPC()
+            value.credits = CreditsInfo(hasCredits: true, unlimited: false, balance: "2240.36", resetCredits: 1, resetCreditDetails: nil)
+            return value
+        }
+        result = reader.readQuotaSnapshot(context: context, quotaOnly: true, messages: &messages, managedProfile: profile)
+        try check(result.credits?.resetCredits == 1 && result.credits?.resetCreditExpiries == nil,
+            "changed card count invalidates earlier unbound expiry dates")
+        try resetCreditBackfillRoutes(reader: reader, context: context, profile: profile)
+        Harness.rpc = { .init() }
         Harness.events = []; messages = []
         result = reader.readQuotaSnapshot(context: context, quotaOnly: false, messages: &messages, managedProfile: profile)
         try check(result.quotaReadSucceeded && result.credits?.resetCredits == 2
@@ -221,5 +277,79 @@ enum Harness {
         try check(usageCancellation.isCancelled && !quotaCancellation.isCancelled,
             "extracted statistics cancellation leaves independent quota batch alive")
         print("PASS all extracted routing fixtures")
+    }
+
+    static func resetCreditBackfillRoutes(reader: CodexUsageReader, context: RuntimeLoadContext, profile: CodexProfile) throws {
+        let previousHTTP = Harness.http
+        let previousRPC = Harness.rpc
+        defer { Harness.http = previousHTTP; Harness.rpc = previousRPC }
+        let expiry = Date(timeIntervalSince1970: 1_800_000_000)
+        let card: [String: Any] = [
+            "id": "synthetic-reset-card", "status": "available", "resetType": "codexRateLimits",
+            "expiresAt": Int64(expiry.timeIntervalSince1970),
+        ]
+        func rpc(_ summary: [String: Any]?, accountID: Any? = "synthetic-account", email: String = "synthetic-identity",
+                 hasLimits: Bool = true) -> CodexUsageReader.AppServerSnapshot {
+            var payload: [String: Any] = [:]
+            payload["accountId"] = accountID
+            payload["rateLimitResetCredits"] = summary
+            if hasLimits {
+                payload["rateLimits"] = [
+                    "limitId": "codex", "primary": ["usedPercent": 20, "windowDurationMins": 120],
+                    "credits": ["hasCredits": true, "unlimited": true, "balance": "99999"],
+                ] as [String: Any]
+            }
+            var snapshot = CodexUsageReader.AppServerSnapshot()
+            reader.parseRateLimits(payload, into: &snapshot)
+            snapshot.account = .init(type: "chatgpt", planType: nil, emailPresent: true, email: email)
+            return snapshot
+        }
+        func read(quotaOnly: Bool = true) -> CodexUsageReader.AppServerSnapshot {
+            var messages: [String] = []
+            return reader.readQuotaSnapshot(context: context, quotaOnly: quotaOnly, messages: &messages, managedProfile: profile)
+        }
+        Harness.http = { try response($0, reset: true, completeCredits: true, resetDates: false) }
+        Harness.rpc = { rpc(["availableCount": 1, "credits": [card]]) }
+        let current = read()
+        try check(current.credits?.resetCredits == 1 && current.credits?.resetCreditExpiries == [expiry]
+            && current.credits?.balance == "2240.36" && current.credits?.unlimited == false
+            && current.quotaReadSucceeded && current.fiveHourQuota?.usedPercent == 0
+            && current.quotaProvenance == "engine" && current.auxiliaryReadStatus == .upstreamResetCredits,
+            "actual route supplements same-account cards despite unknown RPC quota without replacing balance or engine quota")
+        Harness.rpc = { rpc(["availableCount": 1, "credits": [card]], hasLimits: false) }
+        try check(read().credits?.resetCreditExpiries == [expiry], "card-only RPC response can supplement bound engine quota")
+        for accountID in [nil, NSNull(), "", "other-account"] as [Any?] {
+            Harness.rpc = { rpc(["availableCount": 1, "credits": [card]], accountID: accountID) }
+            let value = read()
+            try check(value.credits?.resetCredits == 2 && value.credits?.resetCreditExpiries == nil
+                && value.credits?.balance == "2240.36", "missing or wrong RPC account ID cannot enter reset-only route")
+        }
+        Harness.rpc = { rpc(["availableCount": 1, "credits": [card]], email: "other-identity") }
+        try check(read().credits?.resetCreditExpiries == nil, "exact RPC account ID cannot bypass account-read email matching")
+        var malformed = card
+        malformed["expiresAt"] = "not-an-epoch"
+        Harness.rpc = { rpc(["availableCount": 1, "credits": [malformed]]) }
+        try check(read().credits?.resetCredits == 2 && read().credits?.resetCreditExpiries == nil,
+            "malformed RPC reset dates preserve count-only engine evidence")
+        Harness.rpc = { .init() }
+        try check(read().credits?.resetCredits == 2 && read().credits?.resetCreditExpiries == nil,
+            "RPC failure or timeout without a parsed response cannot manufacture reset evidence")
+        Harness.rpc = { rpc(nil) }
+        try check(read().credits?.resetCredits == 2 && read().credits?.resetCreditExpiries == nil,
+            "unknown RPC reset summary cannot replace known engine count")
+        Harness.rpc = { rpc(["availableCount": 0, "credits": NSNull()]) }
+        let zero = read()
+        try check(zero.credits?.resetCredits == 0 && zero.credits?.resetCreditExpiries == [] && zero.credits?.balance == "2240.36",
+            "verified zero cards clear dates without losing spendable balance")
+        Harness.http = { try response($0, reset: true, completeCredits: true) }
+        Harness.rpc = { rpc(["availableCount": 2, "credits": NSNull()]) }
+        try check(read(quotaOnly: false).credits?.resetCreditExpiries?.count == 2,
+            "same-count null RPC details preserve independently reported dates")
+        Harness.rpc = { rpc(["availableCount": 1, "credits": NSNull()]) }
+        try check(read(quotaOnly: false).credits?.resetCreditExpiries == nil,
+            "changed-count null RPC details clear earlier dates")
+        Harness.rpc = { rpc(["availableCount": 2, "credits": []]) }
+        try check(read(quotaOnly: false).credits?.resetCreditExpiries == [],
+            "explicit empty RPC details cannot revive old dates on the reset-only route")
     }
 }

@@ -11,6 +11,9 @@ spec.loader.exec_module(builder)
 builder.SOURCE = SCRIPT.parent.parent / "Companion/AntigravityProxy"
 builder.EXECUTABLE = "aigoodbro-antigravity-proxy"
 builder.RESOURCE_DIRECTORY = "AntigravityProxy"
+# This adapter retains its independent reviewed SDK while LocalProxy advances.
+builder.UPSTREAM_VERSION = "v8.0.38"
+builder.UPSTREAM_COMMIT = "0db19025571684b198a2ef508f99b41c717337e8"
 
 
 def provider_patch_support():

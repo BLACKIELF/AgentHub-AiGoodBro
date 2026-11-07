@@ -5,9 +5,10 @@ struct LocalProxyQueueView: View {
     let language: WidgetLanguage
     var onClose: (() -> Void)? = nil
     var isCurrentPresentation: () -> Bool = { true }
-    var previewExpandedRules = false
+    var previewExpandedRules = true
     var previewExpandedDetail: String? = nil
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.workspacePreviewDate) private var previewDate
     @State private var portText = "18080"
     @State private var keyMode = LocalProxyClientKeyMode.persistent
     @State private var networkDraft = LocalProxyEgressSettings()
@@ -303,8 +304,8 @@ struct LocalProxyQueueView: View {
             .controlSize(.small)
             Text(
                 language.text(
-                    "先用订阅额度，再按各账号授权逐档用点数。下方可为每个账号设置上限和底线；单次结算可能越过底线。",
-                    "Subscriptions first, then credits from authorized accounts. Set individual limits below. A single settlement may cross a credit floor."
+                    "默认只用订阅额度。总开关和账号规则都允许时，才会接续使用点数；单次结算可能越过底线。",
+                    "Subscription quota only by default. Credits require both the global switch and account permission; a single settlement may cross a floor."
                 )
             ).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if parsedCreditFloors == nil && creditFloorsChanged {
@@ -395,8 +396,8 @@ struct LocalProxyQueueView: View {
                     )
                     Text(
                         language.text(
-                            "先用订阅额度，再用点数。Pro 账号默认最后使用，可随时调整；优先、最后使用与排序对新请求生效，开关与账号页同步。",
-                            "Subscriptions precede credits. Pro accounts default to Use last and can be changed. Priority, Use last and order apply to new requests and sync with the account page."
+                            "默认只用订阅额度；使用点数须同时开启总开关与账号授权。Pro 账号默认最后使用，可随时调整；顺序对新请求生效，开关与账号页同步。",
+                            "Subscription quota only by default; credits require global and account permission. Pro accounts default to Use last. Ordering applies to new requests and syncs with the account page."
                         )
                     )
                     Text(
@@ -602,10 +603,6 @@ struct LocalProxyQueueView: View {
                 .disabled(!model.canToggleAccount(id: row.id))
                 .accessibilityLabel(language.text("\(accountTitle(row)) 参与调用", "Use \(accountTitle(row)) for proxy requests"))
                 orderMenu(row)
-            }
-            .font(.caption).toggleStyle(WorkspaceCheckboxStyle()).controlSize(.small)
-            HStack(spacing: 12) {
-                Text(language.text("调用顺序", "Usage order")).foregroundStyle(.secondary)
                 Toggle(
                     language.text("优先", "Priority"),
                     isOn: Binding(
@@ -630,14 +627,13 @@ struct LocalProxyQueueView: View {
                 )
                 .disabled(!model.canSetAccountLast(id: row.id))
                 .accessibilityLabel(language.text("\(accountTitle(row)) 最后使用", "Use \(accountTitle(row)) last"))
-                Spacer(minLength: 0)
             }
             .font(.caption).toggleStyle(WorkspaceCheckboxStyle()).controlSize(.small)
             LocalProxyAccountPolicyEditor(
                 row: row, language: language, enabled: model.canEditPolicy(for: row.id),
                 globalCreditsEnabled: model.creditFallbackEnabled,
                 defaultPrimary: model.creditPrimaryFloor, defaultSecondary: model.creditSecondaryFloor,
-                initiallyExpanded: previewExpandedRules,
+                initiallyExpanded: previewExpandedRules, referenceDate: previewDate ?? Date(),
                 quotaContent: quotaGroup(row), resetAction: resetCreditAction(row),
                 accessory: resetStopControl(row),
                 save: { model.setAccountPolicy(id: row.id, policy: $0) }
@@ -720,22 +716,38 @@ struct LocalProxyQueueView: View {
                 .font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
             }
         }
-        .padding(10)
+        .padding(8)
         .background(WorkspaceGlassSurface(cornerRadius: 10))
         .accessibilityIdentifier("next.local-proxy.account-\(row.id)")
     }
 
     private func quotaGroup(_ row: LocalProxyQueueRow) -> some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 10) {
             ForEach(row.windows) { window in
-                CompactQuotaView(
-                    title: window.id, remaining: window.remaining, reset: window.resetsAt,
-                    paletteRole: window.id == "5h" ? .primary : .secondary,
-                    constrainedByWeekly: window.constrainedByWeekly, horizontalDetails: true,
-                    isWeeklyOnlyPro: window.isWeeklyOnlyPro
-                )
-                .frame(minWidth: 125, alignment: .leading)
+                HStack(spacing: 5) {
+                    QuotaPercentageRing(
+                        percent: window.remaining, diameter: 28,
+                        tint: window.id == "5h" ? .blue : .purple, isWeeklyOnlyPro: window.isWeeklyOnlyPro)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(window.id).foregroundStyle(.secondary)
+                        if let reset = window.resetsAt {
+                            ResetCountdownText(deadline: reset, kind: .accountWindow, language: language, compact: true)
+                                .foregroundStyle(.secondary)
+                        } else if !window.isWeeklyOnlyPro {
+                            Text(language.text("重置 —", "Reset —")).foregroundStyle(.secondary)
+                        }
+                        if window.constrainedByWeekly {
+                            Text(language.text("受周额度限制", "Weekly limit reached"))
+                                .foregroundStyle(WorkspaceStatusForeground.warning)
+                        }
+                    }.font(.system(size: 10)).lineLimit(1)
+                }
+                .frame(minWidth: 85, alignment: .leading)
                 .fixedSize(horizontal: true, vertical: false)
+                .help(
+                    window.isWeeklyOnlyPro
+                        ? QuotaAvailabilityPresentation.weeklyOnlyProHelp(language)
+                        : window.resetsAt.map { language.dateTime($0) } ?? language.text("官方未提供重置时间", "Official reset time unavailable"))
             }
         }
         .help(row.quotaText ?? "")
@@ -749,7 +761,7 @@ struct LocalProxyQueueView: View {
                 hubAccountAlias: target.hubAccountAlias,
                 onConfirmedResult: { model.refreshAfterResetCredit(target) },
                 onManualResetConfirmed: { model.recordManualResetConfirmed($0) }, displayNumber: row.accountNumber,
-                prominent: true
+                compact: true
             ).accessibilityIdentifier("next.local-proxy.reset-card-\(row.id)")
         } else {
             Text(row.resetCardCount.map { language.text("重置卡 \($0)", "\($0) reset cards") } ?? language.text("重置卡 —", "Reset cards —"))
@@ -809,7 +821,7 @@ struct LocalProxyQueueView: View {
             Image(systemName: "arrow.up.arrow.down")
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .help(language.text("调整同组内排序；优先和最后使用在下方设置", "Move within the group; set Priority and Use last below"))
+        .help(language.text("调整同组内排序", "Move within the group"))
         .accessibilityLabel(language.text("\(accountTitle(row)) 排序", "Order \(accountTitle(row))"))
     }
 
@@ -838,9 +850,8 @@ struct LocalProxyQueueView: View {
                     .foregroundStyle(.secondary)
                     .help(language.dateTime(pausedAt))
             }
-            Spacer(minLength: 0)
         }
-        .font(.caption).controlSize(.small)
+        .font(.caption).controlSize(.small).fixedSize(horizontal: true, vertical: false)
     }
 
     private func stateTitle(_ row: LocalProxyQueueRow) -> String {
@@ -982,13 +993,14 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
     let globalCreditsEnabled: Bool
     let defaultPrimary: Int
     let defaultSecondary: Int
-    var initiallyExpanded = false
+    var initiallyExpanded = true
+    var referenceDate = Date()
     let quotaContent: QuotaContent
     let resetAction: ResetAction
     let accessory: Accessory
     let save: (LocalProxyAccountPolicy) -> Bool
     @State private var limit = ""
-    @State private var allowsCredits = true
+    @State private var allowsCredits = false
     @State private var usesDefaults = true
     @State private var primary = ""
     @State private var secondary = ""
@@ -1032,26 +1044,24 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
         return candidate
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 5) {
             LocalProxyAccountSummaryLayout {
                 quotaContent.fixedSize(horizontal: true, vertical: false)
                 policySummary
-                VStack(alignment: .trailing, spacing: 6) {
+                HStack(spacing: 6) {
                     resetAction
                     disclosureAction
                 }.fixedSize()
             }
             if expanded {
                 Divider()
-                accessory
                 LocalProxyPolicyFieldsLayout(trailingAction: true) {
                     limitFields
                     allowCreditsToggle
-                    saveButton
-                }
-                LocalProxyPolicyFieldsLayout {
                     defaultsToggle
                     creditFloors
+                    accessory
+                    saveButton
                 }
                 if dirty && policy == nil {
                     Text(
@@ -1100,19 +1110,25 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(language.text("\(row.label) 的反代规则", "Proxy rules for \(row.label)"))
+        .accessibilityValue(summary)
     }
 
     private var policySummary: some View {
         VStack(alignment: .leading, spacing: 4) {
-            LocalProxyInlineInfoLayout {
-                Text(summary).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true).help(summary)
+            HStack(spacing: 8) {
                 currentCreditBalance
+                Text(
+                    globalCreditsEnabled && row.policy.allowsCredits
+                        ? language.text("允许点数", "Credits allowed") : language.text("仅订阅", "Subscription only")
+                )
+                .foregroundStyle(.secondary).lineLimit(1)
             }
-            if allowsCredits && !globalCreditsEnabled {
-                Text(language.text("点数总开关未开启，此账号当前仅用订阅额度。", "Credit fallback is off above. This account currently uses subscription quota only."))
-                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
+            ResetCardExpiryFactsView(
+                count: row.resetCardCount, expiries: row.resetCardExpiries,
+                fetchedAt: row.resetCardFetchedAt, readSucceeded: row.resetCardReadSucceeded,
+                now: referenceDate, expiring: false
+            )
+            .accessibilityIdentifier("next.local-proxy.reset-expiry-\(row.id)")
         }
     }
 
@@ -1127,7 +1143,7 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
                 Label(language.text("规则", "Rules"), systemImage: expanded ? "chevron.up" : "chevron.down")
             }
             .accessibilityIdentifier("next.local-proxy.rules-\(row.id)")
-            .help(language.text("展开或收起编辑；未保存草稿会保留。", "Expand or collapse editing; unsaved drafts are retained."))
+            .help(summary + "\n" + language.text("展开或收起编辑；未保存草稿会保留。", "Expand or collapse editing; unsaved drafts are retained."))
         }.fixedSize()
     }
 
@@ -1136,7 +1152,7 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
         if let balance = row.creditBalance {
             CreditBalanceView(
                 presentation: balance, compact: true,
-                title: language.text("现有点数", "Available credits")
+                title: language.text("剩余点数", "Credits left")
             )
             .accessibilityIdentifier("next.local-proxy.credit-balance-\(row.id)")
         }
@@ -1173,7 +1189,10 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
     private var allowCreditsToggle: some View {
         Toggle(language.text("允许使用点数", "Allow credits"), isOn: $allowsCredits)
             .toggleStyle(WorkspaceCheckboxStyle()).fixedSize().disabled(!enabled)
-            .help(language.text("取消后，此账号订阅额度耗尽就停止参与，不使用点数余额。", "When off, this account stops after its subscription quota is exhausted, without using credits."))
+            .help(
+                language.text(
+                    "默认关闭。此项与总开关均开启后才使用点数；关闭时订阅额度耗尽即停止参与。",
+                    "Off by default. Credits require this permission and the global switch; otherwise subscription exhaustion stops this account."))
     }
 
     private var saveButton: some View {
@@ -1190,7 +1209,7 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
     }
 
     private var defaultsToggle: some View {
-        Toggle(language.text("沿用默认点数底线", "Use default credit floors"), isOn: $usesDefaults)
+        Toggle(language.text("默认底线", "Default floors"), isOn: $usesDefaults)
             .toggleStyle(WorkspaceCheckboxStyle()).fixedSize().disabled(!enabled)
     }
     private var creditFloors: some View {
@@ -1203,14 +1222,15 @@ private struct LocalProxyAccountPolicyEditor<QuotaContent: View, ResetAction: Vi
                 Text("/")
                 field("1500", text: $secondary, label: language.text("第二档保留点数", "Second credit floor"))
             }
-            Text(language.text("点（第一档 / 第二档）", "points (first / second)"))
+            Text(language.text("点", "points"))
                 .foregroundStyle(.secondary)
         }.fixedSize().disabled(!enabled)
+            .help(language.text("点数保留底线：第一档 / 第二档。单次结算可能越过底线。", "Credit floors: first / second. A single settlement may cross a floor."))
     }
     private func field(_ placeholder: String, text: Binding<String>, label: String) -> some View {
         TextField(placeholder, text: text).textFieldStyle(.plain)
             .font(.system(size: 12, weight: .medium).monospacedDigit())
-            .foregroundStyle(.primary).padding(.horizontal, 8).frame(width: 64, height: 30)
+            .foregroundStyle(.primary).padding(.horizontal, 6).frame(width: 58, height: 24)
             .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
             .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.25), lineWidth: 1) }
             .accessibilityLabel(label)
@@ -1237,7 +1257,7 @@ private struct LocalProxyPolicyFieldsLayout: Layout {
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let idealWidth =
             subviews.map { $0.sizeThatFits(.unspecified).width }.reduce(0, +)
-            + CGFloat(max(0, subviews.count - 1)) * 10
+            + CGFloat(max(0, subviews.count - 1)) * 8
         let width = proposal.width.flatMap { $0.isFinite ? max(0, $0) : nil } ?? idealWidth
         return CGSize(width: width, height: frames(width: width, subviews: subviews).map(\.maxY).max() ?? 0)
     }
@@ -1252,31 +1272,34 @@ private struct LocalProxyPolicyFieldsLayout: Layout {
 
     private func frames(width: CGFloat, subviews: Subviews) -> [CGRect] {
         let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
-        let inlineWidth = sizes.map(\.width).reduce(0, +) + CGFloat(max(0, sizes.count - 1)) * 10
-        if inlineWidth <= width {
-            let height = sizes.map(\.height).max() ?? 0
-            var offset: CGFloat = 0
-            return sizes.enumerated().map { index, size in
-                let x = trailingAction && index == sizes.count - 1 ? width - size.width : offset
-                offset += size.width + 10
-                return CGRect(x: x, y: (height - size.height) / 2, width: size.width, height: size.height)
+        var rows: [[Int]] = []
+        var row: [Int] = []
+        var used: CGFloat = 0
+        for index in sizes.indices {
+            let required = sizes[index].width + (row.isEmpty ? 0 : 8)
+            if !row.isEmpty, used + required > width {
+                rows.append(row)
+                row = []
+                used = 0
             }
+            used += sizes[index].width + (row.isEmpty ? 0 : 8)
+            row.append(index)
         }
-        if trailingAction, sizes.count == 3, sizes[0].width + 10 + sizes[2].width <= width {
-            let height = max(sizes[0].height, sizes[2].height)
-            return [
-                CGRect(x: 0, y: (height - sizes[0].height) / 2, width: sizes[0].width, height: sizes[0].height),
-                CGRect(x: 0, y: height + 8, width: sizes[1].width, height: sizes[1].height),
-                CGRect(x: width - sizes[2].width, y: (height - sizes[2].height) / 2, width: sizes[2].width, height: sizes[2].height),
-            ]
+        if !row.isEmpty { rows.append(row) }
+        var result = Array(repeating: CGRect.zero, count: sizes.count)
+        var y: CGFloat = 0
+        for row in rows {
+            let height = row.map { sizes[$0].height }.max() ?? 0
+            var x: CGFloat = 0
+            for index in row {
+                let size = sizes[index]
+                let position = trailingAction && index == sizes.count - 1 ? max(x, width - size.width) : x
+                result[index] = CGRect(x: position, y: y + (height - size.height) / 2, width: size.width, height: size.height)
+                x += size.width + 8
+            }
+            y += height + 6
         }
-        var offset: CGFloat = 0
-        return sizes.enumerated().map { index, size in
-            let x = trailingAction && index == sizes.count - 1 ? max(0, width - size.width) : 0
-            let frame = CGRect(x: x, y: offset, width: size.width, height: size.height)
-            offset += size.height + 6
-            return frame
-        }
+        return result
     }
 }
 

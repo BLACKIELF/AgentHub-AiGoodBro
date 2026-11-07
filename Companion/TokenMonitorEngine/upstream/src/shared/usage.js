@@ -535,6 +535,41 @@ function collectUsageRows(node, rows) {
   }
 }
 
+const SESSION_MODEL_COMPONENT_FIELDS = ['inputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'outputTokens'];
+
+// Preserve only observed model components; legacy gaps stay unclassified.
+function normalizeSessionModelComponents(input, session, normalizeModel) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const result = Object.create(null);
+  for (const [rawModel, row] of Object.entries(input)) {
+    const model = normalizeModel(rawModel);
+    if (!model || !row || typeof row !== 'object') return undefined;
+    const keys = ['totalTokens', ...SESSION_MODEL_COMPONENT_FIELDS];
+    if (keys.some(key => !Number.isSafeInteger(row[key]) || row[key] < 0)) return undefined;
+    if (SESSION_MODEL_COMPONENT_FIELDS.reduce((sum, key) => sum + row[key], 0) > row.totalTokens) return undefined;
+    const target = result[model] ||= Object.fromEntries(keys.map(key => [key, 0]));
+    for (const key of keys) target[key] += row[key];
+  }
+  for (const [model, row] of Object.entries(result)) {
+    if (['totalTokens', ...SESSION_MODEL_COMPONENT_FIELDS].some(key => !Number.isSafeInteger(row[key]))) return undefined;
+    if (row.totalTokens > (session.models[model] || 0)) return undefined;
+  }
+  if (Object.values(result).reduce((sum, row) => sum + row.totalTokens, 0) > session.totalTokens) return undefined;
+  for (const field of SESSION_MODEL_COMPONENT_FIELDS) {
+    if (Object.values(result).reduce((sum, row) => sum + row[field], 0) > session[field]) return undefined;
+  }
+  return Object.keys(result).length ? result : undefined;
+}
+
+function mergeSessionModelComponents(target, source) {
+  if (!source.modelTokenComponents) return;
+  target.modelTokenComponents ||= Object.create(null);
+  for (const [model, row] of Object.entries(source.modelTokenComponents)) {
+    const next = target.modelTokenComponents[model] ||= { totalTokens: 0, inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 };
+    for (const key of ['totalTokens', ...SESSION_MODEL_COMPONENT_FIELDS]) next[key] += row[key];
+  }
+}
+
 function sessionTokenComponents(input) {
   return {
     inputTokens: Math.max(0, Math.round(firstNumber(input, INPUT_TOKEN_KEYS))),
@@ -589,6 +624,7 @@ function emptySession(client, id) {
 const sessionsWithLiveSource = new WeakSet();
 
 function mergeSession(target, source) {
+  mergeSessionModelComponents(target, source);
   const sourceTokens = Math.max(0, Math.round(asNumber(source.totalTokens)));
   target.totalTokens += sourceTokens;
   target.costUsd += asNumber(source.costUsd);
@@ -709,6 +745,12 @@ function sessionFromRow(row) {
   session.sessionKind = normalizeSessionKind(row.sessionKind || row.session_kind);
   const model = detectModel(row, client);
   if (model && session.totalTokens > 0) session.models[model] = (session.models[model] || 0) + session.totalTokens;
+  if (model && session.totalTokens > 0) {
+    const rowComponents = Object.fromEntries(['totalTokens', ...SESSION_MODEL_COMPONENT_FIELDS]
+      .map(key => [key, session[key]]));
+    const components = normalizeSessionModelComponents({ [model]: rowComponents }, session, name => name);
+    if (components) session.modelTokenComponents = components;
+  }
   if (model && session.costUsd > 0) session.modelCosts[model] = (session.modelCosts[model] || 0) + session.costUsd;
   const provider = normalizeProviderName(row.provider);
   if (provider && session.totalTokens > 0) session.providers[provider] = (session.providers[provider] || 0) + session.totalTokens;
@@ -771,6 +813,9 @@ function normalizeSession(input, fallbackKey) {
       if (key) session.modelCosts[key] = (session.modelCosts[key] || 0) + asNumber(value);
     }
   }
+  const modelComponents = normalizeSessionModelComponents(input.modelTokenComponents, session,
+    model => normalizeModelNameForClient(model, client));
+  if (modelComponents) session.modelTokenComponents = modelComponents;
   if (input.providers && typeof input.providers === 'object') {
     for (const [provider, value] of Object.entries(input.providers)) {
       const key = normalizeProviderName(provider);
@@ -1874,6 +1919,23 @@ function deltaValue(base, fresh, anchor, key) {
         anchor ? anchor[childKey] : undefined,
         childKey
       );
+    }
+    if (sample.client && sample.sessionId && result.modelTokenComponents
+        && (asNumber(fresh?.totalTokens) > 0 || asNumber(anchor?.totalTokens) > 0)) {
+      // Missing model coverage cannot be subtracted as an observed zero.
+      const complete = [base, fresh, anchor].every(session => !session || asNumber(session.totalTokens) === 0
+        || Object.entries(session.models || {}).every(([model, tokens]) => tokens === 0
+          || session.modelTokenComponents?.[model]?.totalTokens === tokens));
+      const models = new Set([base, fresh, anchor].flatMap(session => Object.keys(session?.modelTokenComponents || {})));
+      const exact = complete && [...models].every(model =>
+        ['totalTokens', ...SESSION_MODEL_COMPONENT_FIELDS].every(field =>
+          (base?.modelTokenComponents?.[model]?.[field] || 0)
+          + (fresh?.modelTokenComponents?.[model]?.[field] || 0)
+          - (anchor?.modelTokenComponents?.[model]?.[field] || 0) >= 0));
+      const components = exact && normalizeSessionModelComponents(result.modelTokenComponents, result,
+        model => normalizeModelNameForClient(model, result.client));
+      if (components) result.modelTokenComponents = components;
+      else delete result.modelTokenComponents;
     }
     return result;
   }

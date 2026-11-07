@@ -16,8 +16,8 @@ SOURCE = ROOT / "Companion/LocalProxy"
 EXECUTABLE = "aigoodbro-local-proxy"
 RESOURCE_DIRECTORY = "LocalProxy"
 UPSTREAM_MODULE = "github.com/router-for-me/CLIProxyAPI/v8"
-UPSTREAM_VERSION = "v8.0.38"
-UPSTREAM_COMMIT = "0db19025571684b198a2ef508f99b41c717337e8"
+UPSTREAM_VERSION = "v8.0.58"
+UPSTREAM_COMMIT = "e5e6ad1e1b91fc20ab9964e6fb22c0c269b9d882"
 
 
 def digest(path):
@@ -105,13 +105,17 @@ def dependency_notices(environment, build_source=SOURCE, reviewed_replacement=No
         ["go", "list", "-mod=readonly", "-deps", "-json", "."],
         cwd=build_source, env=environment, text=True)
     modules = {}
+    patch_support, reviewed = upstream_patch_support()
+    replacement_pins = {row["module"]: row for row in (reviewed or {}).get("dependencyReplacements", [])}
     for package in json_stream(listing):
         module = package.get("Module")
         if not module or module.get("Main"):
             continue
         if module.get("Replace"):
             replacement = module["Replace"]
-            if (module["Path"] != UPSTREAM_MODULE or module.get("Version") != UPSTREAM_VERSION
+            if module["Path"] in replacement_pins:
+                patch_support.check_dependency_replacement(module, replacement_pins[module["Path"]])
+            elif (module["Path"] != UPSTREAM_MODULE or module.get("Version") != UPSTREAM_VERSION
                     or reviewed_replacement is None
                     or Path(replacement.get("Dir", "")).resolve() != reviewed_replacement.resolve()
                     or replacement.get("Version")):
@@ -128,10 +132,12 @@ def dependency_notices(environment, build_source=SOURCE, reviewed_replacement=No
                        and p.name.upper().split(".")[0] in {"LICENSE", "LICENCE", "COPYING", "NOTICE"})
         if not files:
             raise ValueError(f"Missing dependency license for {name}")
-        notices.append(f"\n{name} {module.get('Version', '')}\n")
+        effective = module.get("Replace", module)
+        notices.append(f"\n{name} {module.get('Version', '')}"
+                       + (f" => {effective['Path']} {effective.get('Version', '')}" if module.get("Replace") else "") + "\n")
         for path in files:
             notices.append(f"\n--- {path.name} ---\n{path.read_text(errors='replace')}\n")
-    return "".join(notices), len(modules)
+    return "\n".join(line.rstrip() for line in "".join(notices).splitlines()).rstrip() + "\n", len(modules)
 
 
 def build(resources, arch, identity):

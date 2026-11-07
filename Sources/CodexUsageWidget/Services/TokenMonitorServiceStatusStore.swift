@@ -18,14 +18,48 @@ enum TokenMonitorServiceStatusIndicator: String, Codable, Sendable {
 enum TokenMonitorServiceStatusProvider: String, CaseIterable, Identifiable, Sendable {
     case claude
     case openAI = "openai"
+    case cursor
+    case factory
+    case kimi
+    case copilot = "github"
+    case devin
+    case minimax
+    case minimaxInternational = "minimax-intl"
 
     var id: String { rawValue }
-    var label: String { self == .claude ? "Claude" : "OpenAI" }
-    var pageURL: URL {
+    var label: String {
         switch self {
-        case .claude: URL(string: "https://status.claude.com")!
-        case .openAI: URL(string: "https://status.openai.com")!
+        case .claude: "Claude"
+        case .openAI: "OpenAI"
+        case .cursor: "Cursor"
+        case .factory: "Factory Droid"
+        case .kimi: "Kimi"
+        case .copilot: "Copilot"
+        case .devin: "Devin"
+        case .minimax: "MiniMax (China)"
+        case .minimaxInternational: "MiniMax (International)"
         }
+    }
+    var pageURL: URL {
+        let address: String
+        switch self {
+        case .claude: address = "https://status.claude.com"
+        case .openAI: address = "https://status.openai.com"
+        case .cursor: address = "https://status.cursor.com"
+        case .factory: address = "https://status.factory.ai"
+        case .kimi: address = "https://status.moonshot.cn"
+        case .copilot: address = "https://www.githubstatus.com"
+        case .devin: address = "https://www.devinstatus.com"
+        case .minimax: address = "https://status.minimaxi.com"
+        case .minimaxInternational: address = "https://status.minimax.io"
+        }
+        return URL(string: address)!
+    }
+
+    // GitHub's page also covers unrelated services. Follow the upstream
+    // Copilot scope instead of claiming a GitHub Actions incident affects Code.
+    var componentIDs: Set<String> {
+        self == .copilot ? ["pjmpxvq2cmr2", "cnnb39dkkk82"] : []
     }
 }
 
@@ -135,11 +169,11 @@ final class TokenMonitorServiceStatusStore: ObservableObject {
         do {
             let response = try await transport.send(request, maximumResponseBytes: 524_288)
             guard response.statusCode == 200,
-                let page = try? JSONDecoder().decode(StatuspageSummary.self, from: response.body)
+                let entry = summarize(provider: provider, data: response.body, checkedAt: checkedAt)
             else {
                 return failed(provider: provider, checkedAt: checkedAt, staleValue: staleValue)
             }
-            return summarize(provider: provider, payload: page, checkedAt: checkedAt)
+            return entry
         } catch is CancellationError {
             return staleValue ?? failed(provider: provider, checkedAt: checkedAt, staleValue: nil)
         } catch {
@@ -176,13 +210,56 @@ final class TokenMonitorServiceStatusStore: ObservableObject {
             error: "Could not check this service status.", isStale: false)
     }
 
+    /// Pure parser shared with offline service-status fixtures.
+    static func summarize(provider: TokenMonitorServiceStatusProvider, data: Data, checkedAt: Date) -> TokenMonitorServiceStatusEntry? {
+        guard let payload = try? JSONDecoder().decode(StatuspageSummary.self, from: data) else { return nil }
+        let scope = provider.componentIDs
+        if !scope.isEmpty {
+            let components = (payload.components ?? []).filter { scope.contains($0.id ?? "") }
+            guard scope.isSubset(of: Set(components.compactMap(\.id))) else { return nil }
+        }
+        return summarize(provider: provider, payload: payload, checkedAt: checkedAt)
+    }
+
     private static func summarize(
         provider: TokenMonitorServiceStatusProvider,
         payload: StatuspageSummary,
         checkedAt: Date
     ) -> TokenMonitorServiceStatusEntry {
-        let raw = payload.status?.indicator?.lowercased() ?? "unknown"
-        let indicator = TokenMonitorServiceStatusIndicator(rawValue: raw) ?? .unknown
+        let scope = provider.componentIDs
+        let sourceComponents = (payload.components ?? []).filter { scope.isEmpty || scope.contains($0.id ?? "") }
+        let incidents = (payload.incidents ?? []).filter {
+            let status = ($0.status ?? "").lowercased()
+            return !status.isEmpty && !["resolved", "completed", "postmortem"].contains(status)
+                && (scope.isEmpty || ($0.components ?? []).contains { scope.contains($0.id ?? "") })
+        }
+        let maintenances = (payload.scheduledMaintenances ?? []).filter {
+            let status = ($0.status ?? "").lowercased()
+            return !status.isEmpty && !["completed", "canceled"].contains(status)
+                && (scope.isEmpty || ($0.components ?? []).contains { scope.contains($0.id ?? "") })
+        }
+        let indicator: TokenMonitorServiceStatusIndicator
+        if scope.isEmpty {
+            indicator = TokenMonitorServiceStatusIndicator(rawValue: payload.status?.indicator?.lowercased() ?? "unknown") ?? .unknown
+        } else {
+            var ranks = sourceComponents.map { component -> Int in
+                switch component.status?.lowercased() {
+                case "operational", "under_maintenance": return 0
+                case "major_outage": return 3
+                case "partial_outage": return 2
+                default: return 1
+                }
+            }
+            ranks += incidents.map { incident -> Int in
+                switch incident.impact?.lowercased() {
+                case "none": return 0
+                case "critical": return 3
+                case "major": return 2
+                default: return 1
+                }
+            }
+            indicator = [.none, .minor, .major, .critical][ranks.max() ?? 0]
+        }
         let state: TokenMonitorServiceHealth
         switch indicator {
         case .none: state = .operational
@@ -190,23 +267,19 @@ final class TokenMonitorServiceStatusStore: ObservableObject {
         case .major, .critical: state = .outage
         case .unknown: state = .unknown
         }
-        let components = (payload.components ?? []).compactMap { component -> TokenMonitorServiceComponentIssue? in
+        let components = sourceComponents.compactMap { component -> TokenMonitorServiceComponentIssue? in
             let status = component.status?.lowercased() ?? "unknown"
             guard status != "operational", status != "under_maintenance" else { return nil }
             return TokenMonitorServiceComponentIssue(
                 name: String((component.name ?? "Unknown").prefix(120)),
                 status: String(status.prefix(40)))
         }
-        let incidents = (payload.incidents ?? []).filter {
-            !["resolved", "completed", "postmortem"].contains(($0.status ?? "").lowercased())
-        }
-        let maintenances = (payload.scheduledMaintenances ?? []).filter {
-            !["completed", "canceled"].contains(($0.status ?? "").lowercased())
-        }
         return TokenMonitorServiceStatusEntry(
             id: provider.id, label: provider.label, pageURL: provider.pageURL.absoluteString,
             state: state, indicator: indicator,
-            description: String((payload.status?.description ?? "Unknown").prefix(160)),
+            description: scope.isEmpty
+                ? String((payload.status?.description ?? "Unknown").prefix(160))
+                : indicator == .none ? "All Systems Operational" : indicator == .minor ? "Degraded Performance" : "Service Outage",
             checkedAt: checkedAt,
             updatedAt: TokenMonitorResponse.timestamp(payload.page?.updatedAt ?? payload.status?.updatedAt ?? ""),
             componentIssues: Array(components.prefix(32)),
@@ -231,12 +304,15 @@ private struct StatuspageSummary: Decodable {
         enum CodingKeys: String, CodingKey { case updatedAt = "updated_at" }
     }
     struct Component: Decodable {
+        let id: String?
         let name: String?
         let status: String?
     }
     struct Incident: Decodable {
         let name: String?
         let status: String?
+        let impact: String?
+        let components: [Component]?
     }
     let status: Status?
     let page: Page?

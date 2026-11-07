@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Build/test LocalProxy with an isolated, checksum-pinned single upstream patch."""
+"""Build/test LocalProxy against verified upstream modules without modifying their cache."""
 import argparse
 import base64
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
-import re
 import shutil
 import shlex
 import subprocess
@@ -16,10 +15,9 @@ import tempfile
 SOURCE = Path(__file__).resolve().parent
 MANIFEST = "upstream-patches/manifest.json"
 MODULE = "github.com/router-for-me/CLIProxyAPI/v8"
-VERSION = "v8.0.38"
-COMMIT = "0db19025571684b198a2ef508f99b41c717337e8"
-TARGET = "internal/runtime/executor/codex_executor_terminal.go"
-PATCH_COMMIT = "9e79552fb79461b3ee475c0b30ef33408392db5a"
+VERSION = "v8.0.58"
+COMMIT = "e5e6ad1e1b91fc20ab9964e6fb22c0c269b9d882"
+MANIFEST_SHA256 = "a596dbbe1a21793d2cea602024481c49e2a0eabf7aa832f6a3515c3133743821"
 
 
 def sha256(data):
@@ -40,48 +38,35 @@ def relative_path(value):
 
 
 def load_manifest(source=SOURCE):
-    manifest = json.loads(regular_bytes(source / MANIFEST))
+    path = source / MANIFEST
+    if path.parent.is_symlink():
+        raise ValueError("Upstream manifest directory must not be a symlink")
+    data = regular_bytes(path)
+    if sha256(data) != MANIFEST_SHA256:
+        raise ValueError("Upstream manifest digest mismatch")
+    manifest = json.loads(data)
     if (manifest.get("schemaVersion") != 1 or manifest.get("upstreamModule") != MODULE
             or manifest.get("upstreamVersion") != VERSION or manifest.get("upstreamCommit") != COMMIT
-            or len(manifest.get("patches", [])) != 1):
-        raise ValueError("Upstream patch provenance does not match the reviewed source")
-    patch = manifest["patches"][0]
-    if patch.get("target") != TARGET or patch.get("upstreamCommit") != PATCH_COMMIT:
-        raise ValueError("Unreviewed upstream patch target or commit")
-    path = source / relative_path(patch["file"])
-    if path.parent.is_symlink() or sha256(regular_bytes(path)) != patch["patchSHA256"]:
-        raise ValueError("Upstream patch digest mismatch")
-    for field in ("originalSHA256", "patchedSHA256", "patchSHA256"):
-        if not re.fullmatch(r"[0-9a-f]{64}", patch.get(field, "")):
-            raise ValueError("Invalid upstream patch digest")
+            or manifest.get("patches") != []):
+        raise ValueError("Upstream provenance does not match the reviewed source")
     return manifest
 
 
-def apply_patch(original, patch_bytes, target):
-    """Apply the pinned single hunk with exact lines and counts; never fuzzy-match."""
-    source_lines = original.decode("utf-8").splitlines(keepends=True)
-    lines = patch_bytes.decode("utf-8").splitlines(keepends=True)
-    while lines and lines[-1] == "\n":
-        lines.pop()
-    if len(lines) < 4 or lines[:2] != ["--- a/" + target + "\n", "+++ b/" + target + "\n"]:
-        raise ValueError("Unexpected upstream patch headers")
-    match = re.fullmatch(r"@@ -(\d+),(\d+) \+(\d+),(\d+) @@[^\n]*\n", lines[2])
-    if not match:
-        raise ValueError("Expected exactly one bounded upstream patch hunk")
-    old_start, old_count, new_start, new_count = map(int, match.groups())
-    if old_start != new_start:
-        raise ValueError("Unexpected upstream patch offset")
-    old, new = [], []
-    for line in lines[3:]:
-        if not line or line[0] not in " +-":
-            raise ValueError("Unsupported upstream patch syntax")
-        if line[0] in " -":
-            old.append(line[1:])
-        if line[0] in " +":
-            new.append(line[1:])
-    if len(old) != old_count or len(new) != new_count or source_lines[old_start - 1:old_start - 1 + old_count] != old:
-        raise ValueError("Upstream patch does not match the pinned source exactly")
-    return "".join(source_lines[:old_start - 1] + new + source_lines[old_start - 1 + old_count:]).encode()
+def has_source_override(flags):
+    return any(flag.split("=", 1)[0].lstrip("-") in {"overlay", "modfile", "C"} for flag in flags)
+
+
+def check_dependency_replacement(module, pin):
+    replacement = module.get("Replace", {})
+    if (module.get("Path") != pin["module"] or module.get("Version") != pin["version"]
+            or replacement.get("Path") != pin["replacementModule"]
+            or replacement.get("Version") != pin["replacementVersion"]
+            or replacement.get("Sum") != pin["moduleSum"]
+            or replacement.get("GoModSum") != pin["moduleGoModSum"]
+            or not isinstance(replacement.get("Dir"), str) or not replacement["Dir"]
+            or replacement.get("Replace")):
+        raise ValueError("Dependency replacement does not match upstream's reviewed pin")
+    return Path(replacement["Dir"])
 
 
 def write_generated(path, data):
@@ -93,7 +78,7 @@ def write_generated(path, data):
         handle.write(data)
 
 
-def verify_module_tree(module, expected):
+def verify_module_tree(module, expected, module_name=MODULE, version=VERSION):
     # Go dirhash.Hash1: SHA256 of each content digest and its module zip name.
     # This verifies only this fixed module and works with a fully offline cache.
     aggregate = hashlib.sha256()
@@ -104,7 +89,7 @@ def verify_module_tree(module, expected):
         if path.is_file():
             files.append(path)
     for path in sorted(files, key=lambda item: item.as_posix()):
-        name = MODULE + "@" + VERSION + "/" + path.relative_to(module).as_posix()
+        name = module_name + "@" + version + "/" + path.relative_to(module).as_posix()
         aggregate.update((sha256(path.read_bytes()) + "  " + name + "\n").encode())
     if "h1:" + base64.b64encode(aggregate.digest()).decode() != expected:
         raise ValueError("Pinned upstream module tree checksum mismatch")
@@ -112,8 +97,7 @@ def verify_module_tree(module, expected):
 
 def prepare_source(directory, environment, source=SOURCE):
     manifest = load_manifest(source)
-    if any(flag == "-overlay" or flag.startswith("-overlay=") or flag == "-modfile" or flag.startswith("-modfile=")
-           for flag in shlex.split(environment.get("GOFLAGS", ""))):
+    if has_source_override(shlex.split(environment.get("GOFLAGS", ""))):
         raise ValueError("GOFLAGS contains an unreviewed source override")
     # Query the effective module, not a different manually downloaded copy.
     for attempt in range(2):
@@ -133,41 +117,42 @@ def prepare_source(directory, environment, source=SOURCE):
         subprocess.run(["go", "mod", "download", MODULE + "@" + VERSION],
                        cwd=source, env=environment, check=True)
     module = Path(upstream["Dir"])
-    patch = manifest["patches"][0]
-    original_path = module / relative_path(patch["target"])
-    original = regular_bytes(original_path)
-    if sha256(original) != patch["originalSHA256"]:
-        raise ValueError("Original upstream source digest mismatch; cache was not changed")
-    patched = apply_patch(original, regular_bytes(source / patch["file"]), patch["target"])
-    if sha256(patched) != patch["patchedSHA256"]:
-        raise ValueError("Patched upstream source digest mismatch")
-    if directory.is_symlink():
-        raise ValueError("Upstream source directory must not be a symlink")
-    directory.mkdir(parents=True, exist_ok=True)
-    # Go refuses overlays beneath GOMODCACHE. Verify the original module, then
-    # copy it into this disposable build directory; shared cache bytes stay intact.
     verify_module_tree(module, manifest["moduleSum"])
-    replacement = directory.resolve() / "cliproxyapi-v8.0.38"
-    shutil.copytree(module, replacement)
-    verify_module_tree(replacement, manifest["moduleSum"])
-    patched_path = replacement / patch["target"]
-    patched_path.chmod(0o644)
-    patched_path.write_bytes(patched)
+    for fix in manifest["includedUpstreamFixes"]:
+        if sha256(regular_bytes(module / relative_path(fix["target"]))) != fix["targetSHA256"]:
+            raise ValueError("Included upstream fix source digest mismatch")
+    module_config = json.loads(subprocess.check_output(
+        ["go", "mod", "edit", "-json"], cwd=source, env=environment, text=True))
+    expected_replacements = [
+        {"Old": {"Path": pin["module"], "Version": pin["version"]},
+         "New": {"Path": pin["replacementModule"], "Version": pin["replacementVersion"]}}
+        for pin in manifest["dependencyReplacements"]]
+    if module_config.get("Replace", []) != expected_replacements:
+        raise ValueError("LocalProxy module contains an unreviewed replacement")
+    for pin in manifest["dependencyReplacements"]:
+        for attempt in range(2):
+            replacement = json.loads(subprocess.check_output(
+                ["go", "list", "-mod=readonly", "-m", "-json", pin["module"]],
+                cwd=source, env=environment, text=True))
+            if replacement.get("Replace", {}).get("Dir"):
+                break
+            if attempt:
+                raise ValueError("Pinned dependency source is unavailable after download")
+            subprocess.run(["go", "mod", "download", pin["replacementModule"] + "@" + pin["replacementVersion"]],
+                           cwd=source, env=environment, check=True)
+        replacement_dir = check_dependency_replacement(replacement, pin)
+        verify_module_tree(replacement_dir, pin["moduleSum"], pin["replacementModule"], pin["replacementVersion"])
+    if directory.is_symlink():
+        raise ValueError("Build source directory must not be a symlink")
+    directory.mkdir(parents=True, exist_ok=True)
     build_source = directory.resolve() / "adapter"
     build_source.mkdir()
     for path in sorted(source.glob("*.go")):
         shutil.copyfile(path, build_source / path.name)
     for name in ("go.mod", "go.sum"):
         shutil.copyfile(source / name, build_source / name)
-    modfile = build_source / "go.mod"
-    module_data = regular_bytes(source / "go.mod")
-    if re.search(rb"(?m)^replace\b", module_data):
-        raise ValueError("LocalProxy module contains an unreviewed replacement")
-    # The relative path is stable across machines/build directories and is
-    # recorded verbatim in Go build metadata. No random/private path is embedded.
-    modfile.write_bytes(module_data + ("\nreplace " + MODULE + " => ../cliproxyapi-v8.0.38\n").encode())
     write_generated(directory / "receipt.json", (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode())
-    return build_source, manifest, replacement
+    return build_source, manifest, None
 
 
 def main():
@@ -175,14 +160,14 @@ def main():
     parser.add_argument("--build-root", type=Path)
     parser.add_argument("command", choices=["build", "test", "vet", "list"])
     args, flags = parser.parse_known_args()
-    if any(flag == "-overlay" or flag.startswith("-overlay=") or flag == "-modfile" or flag.startswith("-modfile=") for flag in flags):
+    if has_source_override(flags):
         parser.error("The reviewed upstream source cannot be overridden")
     flags = [str((Path.cwd() / flag).resolve()) if index > 0 and flags[index - 1] == "-o" else flag
              for index, flag in enumerate(flags)]
     environment = dict(os.environ, GOWORK="off")
     root = args.build_root or Path(environment.get("AIGOODBRO_PROXY_BUILD_ROOT", SOURCE.parents[1] / "build/proxy-upstream"))
     root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".metadata-1026v1-", dir=root) as temporary:
+    with tempfile.TemporaryDirectory(prefix=".verified-1107v1-", dir=root) as temporary:
         build_source, _, _ = prepare_source(Path(temporary), environment)
         return subprocess.call(["go", args.command, *flags], cwd=build_source, env=environment)
 
@@ -191,6 +176,6 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
-        print("LocalProxy upstream patch rejected: " + str(error), file=sys.stderr)
+        print("LocalProxy upstream verification rejected: " + str(error), file=sys.stderr)
         sys.exit(1)
 

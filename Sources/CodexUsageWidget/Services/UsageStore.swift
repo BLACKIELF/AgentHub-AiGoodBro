@@ -1379,7 +1379,7 @@ final class UsageStore: ObservableObject {
 
     func resetCreditExpiries(for profile: CodexProfile) -> [Date] {
         if profile.id == selectedMonitorProfileID {
-            return snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt).sorted() ?? []
+            return snapshot.credits?.resetCreditExpiries?.sorted() ?? []
         }
         return profile.lastSnapshot?.resetCreditExpiries ?? []
     }
@@ -5002,7 +5002,7 @@ final class UsageStore: ObservableObject {
             fiveHourResetsAt: factsSnapshot?.fiveHourQuota?.resetsAt,
             sevenDayResetsAt: factsSnapshot?.sevenDayQuota?.resetsAt,
             availableResetCredits: factsSnapshot?.credits?.resetCredits,
-            resetCreditExpiries: factsSnapshot?.credits?.resetCreditDetails?.compactMap(\.expiresAt) ?? [])
+            resetCreditExpiries: factsSnapshot?.credits?.resetCreditExpiries ?? [])
         let noticeOrigin: MessageNoticeContext.SwitchOrigin
         switch switchOrigin {
         case .manual: noticeOrigin = .manual
@@ -5666,7 +5666,7 @@ final class UsageStore: ObservableObject {
                 let facts = try? MessageChannelAccountFacts(
                     fiveHourResetsAt: snapshot.fiveHourQuota?.resetsAt, sevenDayResetsAt: snapshot.sevenDayQuota?.resetsAt,
                     availableResetCredits: snapshot.credits?.resetCredits,
-                    resetCreditExpiries: snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt) ?? []),
+                    resetCreditExpiries: snapshot.credits?.resetCreditExpiries ?? []),
                 let context = try? MessageNoticeContext(
                     sourceAccount: MessageChannelAccountLabel(source.value),
                     observedAt: MessageNoticeFormat.checkedAt(for: event, fallback: snapshot.refreshedAt),

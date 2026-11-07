@@ -1,6 +1,12 @@
 import Darwin
 import Foundation
 
+enum WidgetLanguage {
+    case en
+    static func storedOrAutomatic() -> Self { .en }
+    func text(_ zh: String, _ en: String) -> String { en }
+}
+
 @main struct EngineFixture {
     static func main() {
         let group = DispatchGroup()
@@ -346,6 +352,28 @@ import Foundation
                     && snapshot.credits?.unlimited == true && snapshot.auxiliaryReadStatus == .upstreamResetCredits,
                 "HTTP direct reset credits zero and balance unlimited independent of subscription")
             try check(mapped.original["resetCredits"] == value["resetCredits"], "all upstream reset expiry evidence retained")
+            value["resetCredits"] = .object([
+                "availableCount": .number(2), "expirations": .array([
+                    .string("2026-12-01T01:00:00Z"), .string("2026-11-20T02:30:00.000Z")]),
+            ])
+            let expirySnapshot = CodexUsageReader.AppServerSnapshot().replacingEngineQuota(try mapProvider(.object(value)), response: response)
+            let expectedFirstExpiry = ISO8601DateFormatter().date(from: "2026-11-20T02:30:00Z")
+            try check(expirySnapshot.credits?.resetCreditExpiries?.first == expectedFirstExpiry
+                && expirySnapshot.credits?.resetCreditExpiries?.count == 2
+                && expirySnapshot.credits?.resetCreditDetails == nil,
+                "engine preserves sorted precise expiry dates without fabricating reset card IDs")
+            let schedulingNow = expectedFirstExpiry!.addingTimeInterval(-600)
+            try check(expirySnapshot.credits?.resetCreditExpiries?.contains {
+                $0 > schedulingNow && $0.timeIntervalSince(schedulingNow) <= 1800
+            } == true, "engine expiry evidence enters the existing pre-expiry candidate window")
+            try resetCreditBackfillChecks(expirySnapshot)
+            value["resetCredits"] = .object([
+                "availableCount": .number(2), "expirations": .array([.string("not-a-date")]),
+            ])
+            let malformedExpiry = CodexUsageReader.AppServerSnapshot().replacingEngineQuota(try mapProvider(.object(value)), response: response)
+            try check(malformedExpiry.credits?.resetCredits == 2 && malformedExpiry.credits?.resetCreditExpiries == nil
+                && malformedExpiry.needsCreditDetails,
+                "malformed engine expiry remains unknown and requests a bounded supplemental read")
             value["windows"] = .array([extra])
             try rejects("additional only cannot become main") { _ = try mapProvider(.object(value)) }
             value["windows"] = .array([.object(["kind": .string("weekly"), "limitId": .string("codex"), "windowMinutes": .number(300), "usedPercent": .number(0)])])
@@ -414,5 +442,74 @@ import Foundation
         let cancellation = TokenMonitorCancellation()
         cancellation.cancel()
         try rejects("pre-cancel") { _ = try TokenMonitorEngine().collect(request: request, cancellation: cancellation) }
+    }
+
+    static func resetCreditBackfillChecks(_ engine: CodexUsageReader.AppServerSnapshot) throws {
+        let expiry = Date(timeIntervalSince1970: 1_800_000_000)
+        let card: [String: Any] = [
+            "id": "synthetic-reset-card", "status": "available", "resetType": "codexRateLimits",
+            "expiresAt": Int64(expiry.timeIntervalSince1970),
+        ]
+        func parsed(_ summary: [String: Any]?, accountID: Any? = "synthetic-account", hasLimits: Bool = true) -> CodexUsageReader.AppServerSnapshot {
+            var payload: [String: Any] = [:]
+            payload["accountId"] = accountID
+            payload["rateLimitResetCredits"] = summary
+            if hasLimits {
+                payload["rateLimits"] = [
+                    "limitId": "codex", "primary": ["usedPercent": 20, "windowDurationMins": 120],
+                    "credits": ["hasCredits": true, "unlimited": false, "balance": "99999"],
+                ] as [String: Any]
+            }
+            var value = CodexUsageReader.AppServerSnapshot()
+            CodexUsageReader().parseRateLimits(payload, into: &value)
+            return value
+        }
+        let valid = parsed(["availableCount": 1, "credits": [card]])
+        try check(!valid.quotaReadSucceeded && valid.fiveHourQuota == nil && valid.sevenDayQuota == nil
+            && valid.resetCreditAccountID == "synthetic-account" && valid.credits?.resetCreditExpiries == [expiry],
+            "actual RPC parser independently validates reset dates when quota topology is unknown")
+        let noLimits = parsed(["availableCount": 1, "credits": [card]], hasLimits: false)
+        try check(!noLimits.quotaReadSucceeded && noLimits.resetCreditAccountID == "synthetic-account"
+            && noLimits.credits?.resetCreditExpiries == [expiry], "missing quota windows do not erase independently parsed reset evidence")
+        var merged = engine
+        merged.mergeResetCreditDetails(valid.credits!)
+        try check(merged.credits?.resetCredits == 1 && merged.credits?.resetCreditExpiries == [expiry]
+            && merged.credits?.balance == engine.credits?.balance && merged.credits?.unlimited == engine.credits?.unlimited
+            && merged.quotaReadSucceeded == engine.quotaReadSucceeded && merged.fiveHourQuota == engine.fiveHourQuota
+            && merged.sevenDayQuota == engine.sevenDayQuota && merged.quotaProvenance == engine.quotaProvenance
+            && merged.auxiliaryReadStatus == engine.auxiliaryReadStatus,
+            "reset-only merge preserves verified engine quota, balance, unlimited and provenance")
+        for raw in [nil, NSNull(), "", "other-account"] as [Any?] {
+            let value = parsed(["availableCount": 1, "credits": [card]], accountID: raw)
+            try check(value.resetCreditAccountID != "synthetic-account", "absent or different RPC account identity cannot match the bound account")
+        }
+        var invalidCard = card
+        invalidCard["expiresAt"] = true
+        for summary in [
+            ["availableCount": true], ["availableCount": -1], ["availableCount": 1.5], ["availableCount": 1_000_001],
+            ["availableCount": 1, "credits": [invalidCard]], ["availableCount": 2, "credits": [card, card]],
+            ["availableCount": 0, "credits": [card]],
+        ] as [[String: Any]] {
+            try check(parsed(summary).resetCreditAccountID == nil, "malformed or contradictory reset summary cannot authorize supplemental evidence")
+        }
+        try check(parsed(nil).resetCreditAccountID == nil && parsed(nil).credits?.resetCredits == nil,
+            "missing reset response remains unknown")
+        for count in [0, 1, 2] {
+            let countOnly = parsed(["availableCount": count, "credits": NSNull()])
+            merged = engine
+            merged.mergeResetCreditDetails(countOnly.credits!)
+            let expected: [Date]? = count == 0 ? [] : count == engine.credits?.resetCredits ? engine.credits?.resetCreditExpiries : nil
+            try check(countOnly.credits?.resetCreditDetails == nil && merged.credits?.resetCredits == count
+                && merged.credits?.resetCreditExpiries == expected,
+                "count-only reset evidence preserves same-count dates and clears zero or changed-count dates")
+        }
+        let emptyDetails = parsed(["availableCount": 2, "credits": []])
+        merged = engine
+        merged.mergeResetCreditDetails(emptyDetails.credits!)
+        try check(emptyDetails.credits?.resetCreditDetails == [] && merged.credits?.resetCreditExpiries == [],
+            "explicit empty card details remain distinct from count-only null")
+        merged = engine
+        merged.mergeResetCreditDetails(.init(hasCredits: true, unlimited: false, balance: "99999", resetCredits: nil, resetCreditDetails: nil))
+        try check(merged.credits == engine.credits, "unknown card count cannot replace verified count, dates or balance")
     }
 }

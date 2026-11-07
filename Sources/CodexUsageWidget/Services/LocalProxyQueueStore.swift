@@ -2759,7 +2759,10 @@ struct LocalProxyDisplayPublicationGate<Value: Equatable> {
                 accountNumber: AccountDisplay.number(for: profile, in: usageStore.profiles),
                 windows: displayWindows,
                 creditBalance: usageStore.creditBalancePresentation(for: profile),
-                resetCardCount: usageStore.availableResetCredits(for: profile),
+                resetCardCount: profile.lastSnapshot?.availableResetCredits,
+                resetCardExpiries: profile.lastSnapshot?.resetCreditExpiries ?? [],
+                resetCardFetchedAt: profile.lastSnapshot?.fetchedAt,
+                resetCardReadSucceeded: profile.lastSnapshot?.quotaReadSucceeded == true && profile.lastQuotaReadFailureAt == nil,
                 snapshotStale: profile.lastQuotaReadFailureAt != nil || profile.lastSnapshot.map { Date().timeIntervalSince($0.fetchedAt) > 1_800 } != false,
                 isDesktopAccount: isDesktop(id), isProPlan: isProPlan,
                 requiresRunRegistration: previewPendingRegistrationIDs.contains(id)

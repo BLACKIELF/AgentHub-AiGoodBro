@@ -1,5 +1,14 @@
 // Synthetic peripheral presentation only. The editor, policy and preference types are production code.
 struct CreditBalancePresentation: Equatable {}
+struct ResetCardExpiryFactsView: View {
+    let count: Int?
+    let expiries: [Date]
+    let fetchedAt: Date?
+    let readSucceeded: Bool
+    let now: Date
+    let expiring: Bool
+    var body: some View { EmptyView() }
+}
 struct WorkspaceGlassSurface: View {
     let cornerRadius: CGFloat
     var body: some View { Color.clear }
@@ -48,7 +57,7 @@ private final class PolicyEditorFixtureModel: ObservableObject {
     @Published var row = LocalProxyQueueRow(
         id: "synthetic-policy-editor", label: "Synthetic policy fixture",
         isEnabled: false, isPriority: false, isCurrent: false,
-        quotaText: nil, state: "unknown", cooldownUntil: nil)
+        quotaText: nil, state: "unknown", cooldownUntil: nil, policy: LocalProxyAccountPolicy(allowsCredits: true))
     @Published var defaultPrimary = 2000
     @Published var defaultSecondary = 1500
     var failSave = false
@@ -90,7 +99,7 @@ private struct PolicyEditorFixtureRoot: View {
         LocalProxyAccountPolicyEditor(
             row: model.row, language: .en, enabled: true, globalCreditsEnabled: false,
             defaultPrimary: model.defaultPrimary, defaultSecondary: model.defaultSecondary,
-            initiallyExpanded: true, quotaContent: Text("Synthetic quota"), resetAction: EmptyView(), accessory: EmptyView(),
+            quotaContent: Text("Synthetic quota"), resetAction: EmptyView(), accessory: EmptyView(),
             save: { model.save($0) })
             .padding(12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -255,7 +264,7 @@ private enum LocalProxyPolicyEditorFixture {
         }
 
         dump("initial")
-        require(fields().count == 1, "Default floors should have one native input")
+        require(fields().count == 1, "Rules must open by default with one native reserve input")
         for (value, text) in [(30.0, "30"), (70, "70"), (37.25, "37.25"), (0, "0"), (100, "100")] {
             edit(text)
             require(PolicyEditorFixtureProbe.dirty, "Editing \(text) did not become unsaved")

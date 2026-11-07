@@ -183,8 +183,13 @@ function claudeRateLimitTierLabel(rateLimitTier) {
 function claudePlanLabelFromParts(subscriptionType, rateLimitTier) {
   const subscriptionLabel = planLabelFromParts(subscriptionType);
   const tierLabel = claudeRateLimitTierLabel(rateLimitTier);
-  if (subscriptionLabel === 'Max' && /^Max\s+(?:5x|20x)$/i.test(tierLabel)) return tierLabel;
-  return subscriptionLabel || tierLabel;
+  const label = subscriptionLabel === 'Max' && /^Max\s+(?:5x|20x)$/i.test(tierLabel)
+    ? tierLabel
+    : subscriptionLabel || tierLabel;
+  // Legacy API tiers keep their identifiers after the public plan rename.
+  if (label === 'Max 5x') return 'Max';
+  if (label === 'Max 20x') return 'Ultra';
+  return label;
 }
 
 function extractClaudeOauth(credentials) {
@@ -1588,8 +1593,10 @@ function parseClaudeCliUsageText(text, now = new Date()) {
   }
   const accountEmail = (clean.match(/(?:Account|Email):\s*([^\s@]+@[^\s@]+)/i) || [])[1] || '';
   const accountOrganization = ((clean.match(/(?:Org|Organization):\s*(.+)/i) || [])[1] || '').trim();
-  const accountLabel = planLabelFromParts((clean.match(/(?:Plan|Subscription):\s*([A-Za-z][A-Za-z0-9 _-]{0,30})/i) || [])[1] || '');
-  if (sessionPercentLeft === null) throw errorWithStatus('unavailable', 'Claude CLI usage missing current session');
+  const accountLabel = claudePlanLabelFromParts((clean.match(/(?:Plan|Subscription):\s*([A-Za-z][A-Za-z0-9 _-]{0,30})/i) || [])[1] || '');
+  if (sessionPercentLeft === null && weeklyPercentLeft === null) {
+    throw errorWithStatus('unavailable', 'Claude CLI usage missing quota');
+  }
   return {
     sessionPercentLeft,
     weeklyPercentLeft,
@@ -1898,7 +1905,7 @@ async function isClaudeCliAuthenticated(deps = {}) {
 async function runClaudeUsageCli(deps = {}) {
   if (deps.runClaudeUsageCli) return deps.runClaudeUsageCli();
   if ((deps.platform || process.platform) === 'win32') return runClaudeDirectUsageCli(deps);
-  return runClaudePtyProbe('/usage', 'currentsession.*?[0-9]{1,3}(?:\\.[0-9]+)?%', deps);
+  return runClaudePtyProbe('/usage', '(?:currentsession.*?|currentweek(?:allmodels)?)[0-9]{1,3}(?:\\.[0-9]+)?%', deps);
 }
 
 function runClaudeDirectUsageCli(deps = {}) {

@@ -8,6 +8,9 @@ struct LocalProxyQueueRow: Identifiable, Equatable {
     var windows: [LocalProxyQuotaWindow] = []
     var creditBalance: CreditBalancePresentation? = nil
     var resetCardCount: Int? = nil
+    var resetCardExpiries: [Date] = []
+    var resetCardFetchedAt: Date? = nil
+    var resetCardReadSucceeded = false
     var snapshotStale = false
     var isDesktopAccount = false
     var isProPlan = false
@@ -125,6 +128,9 @@ struct LocalProxyResetStopRule: Codable, Equatable {
 }
 
 struct LocalProxyAccountPolicy: Codable, Equatable {
+    private enum CodingKeys: String, CodingKey {
+        case fiveHourUsedLimit, sevenDayUsedLimit, allowsCredits, creditPrimaryFloor, creditSecondaryFloor
+    }
     // Keep the legacy used-percentage key so existing cutoffs do not change.
     var fiveHourUsedLimit: Double = 100
     // Missing in older preferences means no additional weekly reserve.
@@ -137,7 +143,7 @@ struct LocalProxyAccountPolicy: Codable, Equatable {
         guard value.isFinite, let decimal = Decimal(string: String(value), locale: Locale(identifier: "en_US_POSIX")) else { return .nan }
         return NSDecimalNumber(decimal: Decimal(100) - decimal).doubleValue
     }
-    var allowsCredits = true
+    var allowsCredits = false
     var creditPrimaryFloor: Int? = nil
     var creditSecondaryFloor: Int? = nil
     var isValid: Bool {
@@ -147,6 +153,17 @@ struct LocalProxyAccountPolicy: Codable, Equatable {
         if creditPrimaryFloor == nil && creditSecondaryFloor == nil { return true }
         guard let primary = creditPrimaryFloor, let secondary = creditSecondaryFloor else { return false }
         return LocalProxyPreferences.validCreditFloors(primary: primary, secondary: secondary)
+    }
+}
+extension LocalProxyAccountPolicy {
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            fiveHourUsedLimit: try values.decode(Double.self, forKey: .fiveHourUsedLimit),
+            sevenDayUsedLimit: try values.decodeIfPresent(Double.self, forKey: .sevenDayUsedLimit),
+            allowsCredits: try values.decodeIfPresent(Bool.self, forKey: .allowsCredits) ?? false,
+            creditPrimaryFloor: try values.decodeIfPresent(Int.self, forKey: .creditPrimaryFloor),
+            creditSecondaryFloor: try values.decodeIfPresent(Int.self, forKey: .creditSecondaryFloor))
     }
 }
 enum LocalProxyFailure: String, Error {

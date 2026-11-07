@@ -1856,8 +1856,26 @@ private final class ClaudeStoreTransport: LocalCLIQuotaTransport, @unchecked Sen
         "credential drift during fresh verification clears waiting and permits a new attempt without claiming success")
 }
 
+private func testKimiTotalPresentation() throws {
+    let total = LocalCLIQuotaWindow(id: "monthly", label: "Total quota", usedPercent: 49.39, resetsAt: nil)
+    let code = LocalCLIQuotaWindow(id: "session", label: "5-hour", usedPercent: 0, resetsAt: nil)
+    func result(_ windows: [LocalCLIQuotaWindow]) -> LocalCLIQuotaResult {
+        LocalCLIQuotaResult(state: .available, fetchedAt: Date(), maskedIdentity: nil, identityFingerprint: "synthetic",
+            planLabel: nil, windows: windows, balance: nil, balanceCurrency: nil, sourceLabel: "synthetic", messageCode: nil)
+    }
+    try expect(LocalCLIAccountPresentation.quotaTitle(kind: .kimi, window: total, language: .zh) == "总额度（月）",
+        "Kimi monthly pool is explicitly labelled total")
+    try expect(LocalCLIAccountPresentation.quotaTitle(kind: .kimi, window: code, language: .zh).contains("Code"),
+        "Kimi short window remains explicitly Code-only")
+    try expect(LocalCLIAccountPresentation.quotaExplanation(kind: .kimi, result: result([code]), language: .zh)?.contains("总额度暂未返回") == true,
+        "missing total is disclosed without relabelling Code allowance")
+    try expect(LocalCLIAccountPresentation.quotaExplanation(kind: .kimi, result: result([total, code]), language: .zh) == nil,
+        "verified monthly total does not show a missing-total warning")
+}
+
 @main enum Main {
     @MainActor static func main() async throws {
+        try testKimiTotalPresentation()
         try await testDiscoveryLinkRenameUnlinkAndPermissions()
         try testRenameKeepsOrderAndReportsFailure()
         try testWorkBuddyInternationalOnlyDiscovery()

@@ -169,7 +169,7 @@ enum TokenMonitorEdgeDockProjection {
                 return TokenMonitorEdgeDockQuotaRow(
                     id: metric.id, title: metric.name, percentRemaining: percent,
                     valueLabel: valueLabel, resetLabel: metric.resetLabel,
-                    fetchedAt: metric.fetchedAt, isStale: metric.isStale,
+                    fetchedAt: account.isLoggedIn ? metric.fetchedAt : nil, isStale: metric.isStale,
                     isAvailable: available && (percent != nil || valueLabel != nil)
                 )
             }
@@ -180,16 +180,24 @@ enum TokenMonitorEdgeDockProjection {
             )
         }
         // A verified Codex plan binds the headline to its window, even if that
-        // window is unknown. Other providers retain their first-reportable / zero
-        // policy. Severity still uses the tightest known window independently.
+        // window is unknown. Kimi binds to the shared monthly subscription total;
+        // a Code short window must never stand in for a missing total. Other
+        // providers retain their first-reportable / zero policy. Severity still
+        // uses the tightest known window independently.
         // "active" is only resolved from a separately verified local account ID.
         let candidates: [(TokenMonitorEdgeDockAccountRow, TokenMonitorEdgeDockQuotaRow)] = accounts.compactMap { account in
-            if providerID == "codex", let primaryID = matches.first(where: { $0.accountID == account.id })?.edgeDockPrimaryMetricID {
+            let primaryID =
+                providerID == "kimi"
+                ? "monthly"
+                : providerID == "codex" ? matches.first(where: { $0.accountID == account.id })?.edgeDockPrimaryMetricID : nil
+            if let primaryID {
                 let row =
                     account.quotaRows.first(where: { $0.id == primaryID })
                     ?? TokenMonitorEdgeDockQuotaRow(
                         id: primaryID,
-                        title: primaryID == "seven-day" ? language.text("每周额度", "Weekly quota") : language.text("五小时额度", "5-hour quota"),
+                        title: primaryID == "monthly"
+                            ? language.text("总额度（月）", "Total quota (month)")
+                            : primaryID == "seven-day" ? language.text("每周额度", "Weekly quota") : language.text("五小时额度", "5-hour quota"),
                         percentRemaining: nil, valueLabel: nil, resetLabel: "—",
                         fetchedAt: nil, isStale: account.isStale, isAvailable: false)
                 return (account, row)
@@ -227,11 +235,12 @@ enum TokenMonitorEdgeDockProjection {
         let historical =
             providerID == "codex" && item.accountID == nil && item.accountMode == .active
             && activeCodexAccountID == nil && selected != nil
-        let usesPlanHeadline =
-            providerID == "codex"
-            && selected.map { selected in
-                matches.first(where: { $0.accountID == selected.0.id })?.edgeDockPrimaryMetricID != nil
-            } == true
+        let usesBoundHeadline =
+            providerID == "kimi"
+            || (providerID == "codex"
+                && selected.map { selected in
+                    matches.first(where: { $0.accountID == selected.0.id })?.edgeDockPrimaryMetricID != nil
+                } == true)
         let severity =
             providerID == "claude" || historical
             ? nil
@@ -253,7 +262,7 @@ enum TokenMonitorEdgeDockProjection {
             metric: nil, percentRemaining: selected?.1.percentRemaining,
             severityRemainingPercent: severity,
             isStale: historical
-                || (usesPlanHeadline
+                || (usesBoundHeadline
                     ? selected?.1.isStale == true
                     : accounts.contains { $0.isStale }
                         || (item.accountID == nil && usage.isStale && providerID != "grok" && providerID != "claude")),

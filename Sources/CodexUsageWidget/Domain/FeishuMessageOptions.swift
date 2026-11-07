@@ -150,7 +150,7 @@ struct FeishuAccountFacts: Equatable {
             ),
             sevenDay: .finiteWindow(snapshot.sevenDayQuota),
             availableResetCredits: snapshot.credits?.resetCredits,
-            resetCreditExpiries: snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt) ?? []
+            resetCreditExpiries: snapshot.credits?.resetCreditExpiries ?? []
         )
     }
 

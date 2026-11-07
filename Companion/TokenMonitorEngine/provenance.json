@@ -76,6 +76,27 @@
         "commit": "e6ca86c5dc3c7acd338fea0fa29ce84a919e84a9",
         "pullRequest": 1145,
         "scope": "Selective truthful Cursor quota and scoped cache/retry adaptation; no new host endpoints or full unified plan support."
+      },
+      {
+        "commit": "b3dd5e25bd9ab89620eb6380c863e335d8b8751e",
+        "deferredPullRequests": [
+          1285
+        ],
+        "pullRequests": [
+          1106,
+          1266,
+          1268,
+          1288,
+          1320,
+          1343,
+          1350,
+          1370,
+          1379,
+          1380
+        ],
+        "release": "v0.87.0",
+        "review": "docs/upstream-adoption-review-1107v1.md",
+        "scope": "Selective limits, service-status, refresh, network and usage-accounting fixes on the retained v0.68.0 runtime. No complete application rebase or new Engine provider capability."
       }
     ],
     "commit": "5d2db368d8313415763860d594de00e46a663418",

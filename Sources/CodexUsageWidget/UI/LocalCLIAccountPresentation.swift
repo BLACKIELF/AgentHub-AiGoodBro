@@ -3,6 +3,17 @@ import Foundation
 /// Display only verified provider facts. Login, quotas and purchased credit are
 /// separate observations and must not be inferred from one another.
 enum LocalCLIAccountPresentation {
+    static func quotaTitle(kind: LocalCLIKind, window: LocalCLIQuotaWindow, language: WidgetLanguage) -> String {
+        guard kind == .kimi else { return window.label }
+        switch window.id {
+        case "monthly": return language.text("总额度（月）", "Total quota (month)")
+        case "monthly-code": return language.text("Code 月用量（总额度内）", "Code monthly (within total)")
+        case "session": return language.text("Code · 5 小时", "Code · 5-hour")
+        case "weekly": return language.text("Code · 7 天", "Code · 7-day")
+        default: return window.label
+        }
+    }
+
     static func balanceTitle(kind: LocalCLIKind, language: WidgetLanguage) -> String {
         if kind == .trae || kind == .workBuddy { return language.text("积分", "Credits") }
         return kind == .grok ? language.text("购入余额", "Purchased balance") : language.text("余额", "Balance")
@@ -24,6 +35,13 @@ enum LocalCLIAccountPresentation {
                 : language.text(
                     "服务端等待时间已过，可刷新额度；限流无需重新登录。",
                     "The server's waiting period has ended. Refresh the quota; no new sign-in is needed.")
+        }
+        if kind == .kimi, result?.state == .available,
+            result?.windows.contains(where: { $0.id == "monthly" }) == false
+        {
+            return language.text(
+                "总额度暂未返回；下方仅显示已读取的 Code 额度。",
+                "Total quota was not reported; only the returned Code limits are shown.")
         }
         guard let code = result?.messageCode else { return nil }
         switch code {

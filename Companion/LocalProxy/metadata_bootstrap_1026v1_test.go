@@ -10,20 +10,24 @@ import (
 )
 
 // Exercise the actual host-admitted HTTP runtime, not a duplicate classifier.
-// Only response.metadata is newly bufferable. Generated output, a dispatched
-// server tool, and an unknown event still commit the response before overload.
+// response.metadata is bufferable and filtered by the upstream Responses SSE
+// writer. Generated output, a dispatched server tool, and an unknown event
+// still commit the response before overload.
 func TestCodexMetadataBootstrap1026(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		boundary   string
-		wantCalls  []string
-		wantMarker string
+		name        string
+		boundary    string
+		wantCalls   []string
+		wantMarker  string
+		codexClient bool
 	}{
-		{"metadata_then_overload", "", []string{"A", "B"}, "done-B"},
-		{"text_then_overload", "text", []string{"A"}, "partial-metadata-A"},
-		{"server_tool_then_overload", "tool", []string{"A"}, "web_search_call"},
-		{"unknown_event_then_overload", "unknown", []string{"A"}, "response.future_metadata"},
-		{"metadata_then_success", "success", []string{"A"}, "done-A"},
+		{"metadata_then_overload", "", []string{"A", "B"}, "done-B", false},
+		{"text_then_overload", "text", []string{"A"}, "partial-metadata-A", false},
+		{"server_tool_then_overload", "tool", []string{"A"}, "web_search_call", false},
+		{"unknown_event_then_overload", "unknown", []string{"A"}, "response.future_metadata", false},
+		{"metadata_then_success", "success", []string{"A"}, "done-A", false},
+		{"native_metadata_then_success", "success", []string{"A"}, "done-A", true},
+		{"native_metadata_then_overload", "", []string{"A", "B"}, "done-B", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b := newFakeBridge(t)
@@ -64,7 +68,16 @@ func TestCodexMetadataBootstrap1026(t *testing.T) {
 			}))
 			defer upstream.Close()
 			_, server, _ := startTestRuntime(t, s, upstream.URL)
-			response := request(t, s, server.URL, true)
+			req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/responses", strings.NewReader(`{"model":"fixture-model","input":"synthetic","stream":true}`))
+			req.Header.Set("Authorization", "Bearer "+s.ClientKey)
+			req.Header.Set("Content-Type", "application/json")
+			if tc.codexClient {
+				req.Header.Set("Originator", "Codex Desktop")
+			}
+			response, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
 			body := consume(t, response)
 			waitEmpty(t, b)
 			mu.Lock()
@@ -87,8 +100,14 @@ func TestCodexMetadataBootstrap1026(t *testing.T) {
 				}
 			}
 			if tc.boundary == "success" {
+				if !tc.codexClient && (strings.Contains(body, "response.metadata") || strings.Contains(body, `"fixture":"metadata-A"`)) {
+					t.Fatal("prompt-moderation metadata leaked into the public Responses stream")
+				}
+				if tc.codexClient && (!strings.Contains(body, "response.metadata") || !strings.Contains(body, `"fixture":"metadata-A"`)) {
+					t.Fatal("native Codex client lost upstream metadata")
+				}
 				last := -1
-				for _, event := range []string{"response.created", "response.in_progress", "response.metadata", "response.output_text.delta", "response.completed"} {
+				for _, event := range []string{"response.created", "response.in_progress", "response.output_text.delta", "response.completed"} {
 					next := strings.Index(body, event)
 					if next <= last {
 						t.Fatalf("buffered event order lost at %s: %s", event, body)
