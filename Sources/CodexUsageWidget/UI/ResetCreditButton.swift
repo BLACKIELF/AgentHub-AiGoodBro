@@ -7,6 +7,7 @@ struct ResetCreditButton: View {
     let selectedProfileID: String?
     let hubAccountAlias: String?
     let onConfirmedResult: () -> Void
+    var onManualResetConfirmed: (CodexResetCreditController.ManualResetConfirmation) -> Void = { _ in }
     var displayNumber: Int? = nil
     var compact = false
     var prominent = false
@@ -55,7 +56,8 @@ struct ResetCreditButton: View {
                     profile: profile,
                     selectedProfileID: selectedProfileID,
                     hubAccountAlias: hubAccountAlias,
-                    onConfirmedResult: onConfirmedResult
+                    onConfirmedResult: onConfirmedResult,
+                    onManualResetConfirmed: onManualResetConfirmed
                 )
             }
         } message: {

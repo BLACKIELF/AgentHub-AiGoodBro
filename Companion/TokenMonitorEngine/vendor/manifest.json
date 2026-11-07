@@ -88,6 +88,28 @@
     "baseVersion": "4.18.0",
     "commit": "fa5f0c13324838d1a988fda317597f9b90da7ad0",
     "fork": "Javis603/tokscale",
+    "localBackport": {
+      "baseCommit": "fa5f0c13324838d1a988fda317597f9b90da7ad0",
+      "patchSHA256": "a5c09f55a7e70f167e4a48b793a169043fdc45c946773360b4e2739cdff5f52d",
+      "platforms": {
+        "darwin-arm64": {
+          "sha256": "5a5e66b0db6deea3234e4f2e793ad975b2e606c3c76f7c8c09f64eea24a6e7f8"
+        }
+      },
+      "pullRequests": [
+        1439,
+        1453,
+        1456,
+        1527,
+        1531,
+        1544,
+        1550
+      ],
+      "reviewEvidenceSHA256": "c4aba3b90ef03d3042477d0211b4968658d8da17e70a854239bfd7f79d774ee3",
+      "scope": "Retain selected Codex/Qwen 1026 fixes; add Qwen explicit-zero semantics and Cursor snapshot deduplication/cache migration. Existing fork full-history sync, pricing override policy and all other parsers are preserved.",
+      "sourceInventorySHA256": "5f9c2d938d7df0167cbe316f5bd3c9cba8991994283119f517faf029ef5e3054",
+      "version": "1027v1"
+    },
     "mode": "override",
     "platformSha256": {
       "android-arm64": {
@@ -98,7 +120,7 @@
       "darwin-arm64": {
         "asset": "tokscale-darwin-arm64",
         "package": "@tokscale/cli-darwin-arm64",
-        "sha256": "61d6422139fe13c68ed8905e8c718d434460ee4f3efd90f68c7619f271245757"
+        "sha256": "5a5e66b0db6deea3234e4f2e793ad975b2e606c3c76f7c8c09f64eea24a6e7f8"
       },
       "darwin-x64": {
         "asset": "tokscale-darwin-x64",

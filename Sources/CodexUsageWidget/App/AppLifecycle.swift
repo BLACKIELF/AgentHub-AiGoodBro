@@ -1,7 +1,19 @@
 import Carbon.HIToolbox
 import Cocoa
 import Combine
+import Darwin
 import SwiftUI
+
+/// Only armed after the user confirms quitting with an active proxy. AppKit's
+/// termination callbacks may contain synchronous I/O, so a stuck callback
+/// must not keep the application alive indefinitely after that confirmation.
+private enum ConfirmedTerminationWatchdog {
+    static func arm() {
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 5) {
+            Darwin._exit(0)
+        }
+    }
+}
 
 private func fourCharCode(_ value: String) -> OSType {
     value.utf8.reduce(0) { result, byte in
@@ -924,13 +936,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             if localProxy.requiresStopConfirmation || !AntigravityProxyStore.shared.canFinishTermination {
                 let alert = NSAlert()
                 alert.alertStyle = .warning
-                alert.messageText = settings.language.text("退出并停止反代？", "Quit and stop the proxy?")
+                alert.messageText = settings.language.text("强制退出并停止反代？", "Force quit and stop the proxy?")
                 alert.informativeText = settings.language.text(
-                    "所有接入反代的对话都会断开，正在执行的任务可能中断。取消可让反代继续运行。",
-                    "All conversations connected to the proxy will disconnect, and active tasks may be interrupted. Cancel to keep the proxy running."
+                    "强制退出会中断正在回复的任务，尚未保存的状态可能丢失。取消可让反代继续运行。",
+                    "Force quitting interrupts active responses and may lose unsaved state. Cancel to keep the proxy running."
                 )
                 alert.addButton(withTitle: settings.language.text("取消", "Cancel"))
-                alert.addButton(withTitle: settings.language.text("退出并停止", "Quit and stop"))
+                alert.addButton(withTitle: settings.language.text("强制退出", "Force quit"))
                 let response: NSApplication.ModalResponse
                 if let window, window.isVisible { response = await alert.beginSheetModal(for: window) } else { response = alert.runModal() }
                 guard response == .alertSecondButtonReturn else {
@@ -938,6 +950,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                     sender.reply(toApplicationShouldTerminate: false)
                     return
                 }
+                // The confirmation authorizes a bounded forced exit. Preserve
+                // unknown leases for later reconciliation instead of waiting
+                // on the registry or claiming unconfirmed cleanup succeeded.
+                ConfirmedTerminationWatchdog.arm()
+                localProxy.forceStopForConfirmedTermination()
+                AntigravityProxyStore.shared.forceStopForConfirmedTermination()
+                tokenDesktop.forceStopForConfirmedTermination()
+                if store.isLoggingIn { store.cancelLogin() }
+                sender.reply(toApplicationShouldTerminate: true)
+                return
             }
             if store.isLoggingIn {
                 await store.finishLoginForTermination()
@@ -945,7 +967,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             await localProxy.finishForTermination()
             await AntigravityProxyStore.shared.finishForTermination()
             let canTerminate = localProxy.canFinishTermination && AntigravityProxyStore.shared.canFinishTermination
-            if !canTerminate { terminationTask = nil }
+            if !canTerminate {
+                terminationTask = nil
+                localProxy.resumeAfterCancelledTermination()
+            }
             sender.reply(toApplicationShouldTerminate: canTerminate)
             if !canTerminate {
                 let alert = NSAlert()

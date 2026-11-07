@@ -93,7 +93,7 @@ enum ThemeReadabilityPreview {
             settings.language = .zh
             let reference = ISO8601DateFormatter().date(from: "2026-12-31T15:00:00Z")!
             let store = WorkspacePreviewRenderer.fixtureStore(
-                accountCount: 4, root: root, includeQuotaEdgeCases: true,
+                accountCount: 10, root: root, includeQuotaEdgeCases: true,
                 includeResetExpiryDisclosureFixtures: true, referenceDate: reference)
             let proxy = LocalProxyQueueStore(usageStore: store, previewPreferences: .init())
             var images: [[String: Any]] = []
@@ -113,9 +113,9 @@ enum ThemeReadabilityPreview {
                             .environment(\.visualTokens, catalog.resolve(id: palette, appearance: scheme == .dark ? .dark : .light))
                         let filename = "proxy-layout-\(Int(width))-\(expanded ? "expanded" : "summary")-\(theme).png"
                         try WorkspacePreviewRenderer.renderView(
-                            view, size: CGSize(width: width, height: 880), scheme: scheme,
+                            view, size: CGSize(width: width, height: 720), scheme: scheme,
                             to: directory.appendingPathComponent(filename))
-                        images.append(["file": filename, "width": Int(width), "expandedRules": expanded])
+                        images.append(["file": filename, "width": Int(width), "expandedRules": expanded, "height": 720, "accountCount": 10])
                     }
                 }
             }

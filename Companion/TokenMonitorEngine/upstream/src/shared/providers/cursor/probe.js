@@ -8,6 +8,7 @@ const USAGE_SUMMARY_URL = 'https://cursor.com/api/usage-summary';
 const AUTH_ME_URL = 'https://cursor.com/api/auth/me';
 const REQUEST_USAGE_URL = 'https://cursor.com/api/usage';
 const SAND_USAGE_URL = 'https://cursor.com/api/dashboard/get-sand-usage-status';
+const PLAN_INFO_URL = 'https://cursor.com/api/dashboard/get-plan-info';
 const SAND_TIMEOUT_MS = 5000;
 
 const DEFAULT_HEADERS = {
@@ -76,11 +77,32 @@ function parseGrokBotUsage(input) {
     resetsAt,
     windowMinutes,
     hasAvailableUsage: typeof usage.hasAvailableUsage === 'boolean' ? usage.hasAvailableUsage : null,
-    hasNonZeroIncludedLimit: usage.hasNonZeroIncludedLimit === true
+    hasNonZeroIncludedLimit: usage.hasNonZeroIncludedLimit === true,
+    isUnified: usage.isUnified === true
   };
 }
 
-function parseUsageSummary(input, { requestUsage = null } = {}) {
+// Dashboard RPCs use proto3 JSON: omitted boolean fields mean false, while a
+// failed request must remain null so it cannot identify a legacy plan.
+function parsePlanInfo(input) {
+  const response = input && typeof input === 'object' ? input : {};
+  const info = response.planInfo && typeof response.planInfo === 'object' ? response.planInfo : {};
+  const period = info.includedUsagePeriod;
+  const epochIso = (value) => {
+    if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value))) return null;
+    const ms = Number(value);
+    return Number.isSafeInteger(ms) && ms > 0 ? isoTimestampOrNull(ms) : null;
+  };
+  return {
+    isMerged: response.isMerged === true,
+    includedUsagePeriod: period === 'INCLUDED_USAGE_PERIOD_WEEKLY'
+      ? 'weekly' : period === 'INCLUDED_USAGE_PERIOD_MONTHLY' ? 'monthly' : null,
+    includedUsageResetsAt: epochIso(info.includedUsageResetsAt),
+    billingCycleEnd: epochIso(info.billingCycleEnd)
+  };
+}
+
+function parseUsageSummary(input, { requestUsage = null, unifiedPlan = false } = {}) {
   const summary = input && typeof input === 'object' ? input : {};
   const individual = summary.individualUsage && typeof summary.individualUsage === 'object' ? summary.individualUsage : {};
   const plan = individual.plan && typeof individual.plan === 'object' ? individual.plan : {};
@@ -96,7 +118,7 @@ function parseUsageSummary(input, { requestUsage = null } = {}) {
   const overallRemaining = numberOrNull(overall.remaining);
   const autoPercent = clampPercent(numberOrNull(plan.autoPercentUsed));
   const apiPercent = clampPercent(numberOrNull(plan.apiPercentUsed));
-  const onDemandUsed = numberOrNull(onDemand.used) ?? 0;
+  const onDemandUsed = numberOrNull(onDemand.used);
   const onDemandLimit = numberOrNull(onDemand.limit);
   const onDemandRemaining = numberOrNull(onDemand.remaining);
   const teamOnDemandUsed = numberOrNull(teamOnDemand.used);
@@ -108,10 +130,9 @@ function parseUsageSummary(input, { requestUsage = null } = {}) {
 
   let planPercent = clampPercent(numberOrNull(plan.totalPercentUsed));
   if (planPercent === null) {
-    if (planLimit > 0) planPercent = percentFromUsedLimit(planUsed, planLimit);
-    else if (overallLimit !== null && overallLimit > 0) planPercent = percentFromUsedLimit(overallUsed, overallLimit);
-    else if (teamPooledLimit !== null && teamPooledLimit > 0) planPercent = percentFromUsedLimit(teamPooledUsed, teamPooledLimit);
-    else planPercent = 0;
+    if (planLimit > 0) planPercent = percentFromUsedLimit(numberOrNull(plan.used), planLimit);
+    else if (!unifiedPlan && overallLimit !== null && overallLimit > 0) planPercent = percentFromUsedLimit(overallUsed, overallLimit);
+    else if (!unifiedPlan && teamPooledLimit !== null && teamPooledLimit > 0) planPercent = percentFromUsedLimit(teamPooledUsed, teamPooledLimit);
   }
 
   let resolvedPlanUsed = planUsed;
@@ -138,7 +159,7 @@ function parseUsageSummary(input, { requestUsage = null } = {}) {
     planLimitUsd: centsToUsd(resolvedPlanLimit),
     planRemainingUsd: resolvedPlanRemaining === null ? null : centsToUsd(resolvedPlanRemaining),
     onDemandPercent: percentFromUsedLimit(onDemandUsed, onDemandLimit),
-    onDemandUsedUsd: centsToUsd(onDemandUsed),
+    onDemandUsedUsd: onDemandUsed === null ? null : centsToUsd(onDemandUsed),
     onDemandLimitUsd: onDemandLimit === null ? null : centsToUsd(onDemandLimit),
     onDemandRemainingUsd: onDemandRemaining === null ? null : centsToUsd(onDemandRemaining),
     teamOnDemandPercent: percentFromUsedLimit(teamOnDemandUsed, teamOnDemandLimit),
@@ -242,7 +263,7 @@ function requestJson(url, sessionToken, {
 async function probe(sessionToken, opts = {}) {
   if (!sessionToken) return { ok: false, error: { kind: 'unauthorized', message: 'no session token' } };
   const configuredTimeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 15000;
-  const grokBotResultPromise = requestJson(SAND_USAGE_URL, sessionToken, {
+  const dashboardOptions = {
     ...opts,
     timeoutMs: Math.min(configuredTimeoutMs, SAND_TIMEOUT_MS),
     method: 'POST',
@@ -252,7 +273,9 @@ async function probe(sessionToken, opts = {}) {
       'Origin': 'https://cursor.com'
     },
     body: '{}'
-  });
+  };
+  const grokBotResultPromise = requestJson(SAND_USAGE_URL, sessionToken, dashboardOptions);
+  const planInfoResultPromise = requestJson(PLAN_INFO_URL, sessionToken, dashboardOptions);
   const [usageResult, userResult] = await Promise.all([
     requestJson(USAGE_SUMMARY_URL, sessionToken, opts),
     requestJson(AUTH_ME_URL, sessionToken, opts)
@@ -265,9 +288,27 @@ async function probe(sessionToken, opts = {}) {
     const requestUsageResult = await requestJson(url, sessionToken, opts);
     if (requestUsageResult.ok) requestUsage = requestUsageResult.json;
   }
-  const grokBotResult = await grokBotResultPromise;
-  const grokBot = grokBotResult.ok ? parseGrokBotUsage(grokBotResult.json) : null;
-  const usage = { ...parseUsageSummary(usageResult.json, { requestUsage }), grokBot };
+  const [grokBotResult, planInfoResult] = await Promise.all([grokBotResultPromise, planInfoResultPromise]);
+  const validResponse = (result, flag) => result.ok && result.json && typeof result.json === 'object'
+    && !Array.isArray(result.json)
+    && !Object.prototype.hasOwnProperty.call(result.json, 'error')
+    && !Object.prototype.hasOwnProperty.call(result.json, 'errors')
+    && (!Object.prototype.hasOwnProperty.call(result.json, flag) || typeof result.json[flag] === 'boolean');
+  const grokBot = validResponse(grokBotResult, 'isUnified') ? parseGrokBotUsage(grokBotResult.json) : null;
+  const planInfo = validResponse(planInfoResult, 'isMerged') ? parsePlanInfo(planInfoResult.json) : null;
+  const unifiedPlan = planInfo ? planInfo.isMerged : grokBot?.isUnified === true;
+  const usage = { ...parseUsageSummary(usageResult.json, { requestUsage, unifiedPlan }), grokBot, planInfo };
+  if (unifiedPlan) {
+    // Use only a confirmed period; a value from another cycle is not the seat.
+    const period = planInfo?.includedUsagePeriod;
+    const minutes = grokBot?.windowMinutes;
+    const compatibleSand = period === 'weekly' ? minutes == null || minutes === 10080
+      : period === 'monthly' ? minutes == null || (minutes >= 27 * 1440 && minutes <= 32 * 1440)
+        : minutes === 10080;
+    usage.planPercent = grokBot?.isUnified === true && grokBot.usedPercent !== null && compatibleSand
+      ? grokBot.usedPercent
+      : planInfo?.includedUsagePeriod === 'monthly' ? usage.planPercent : null;
+  }
   return { ok: true, usage, user };
 }
 
@@ -275,6 +316,7 @@ module.exports = {
   parseUsageSummary,
   parseRequestUsage,
   parseGrokBotUsage,
+  parsePlanInfo,
   parseUserInfo,
   probe,
   requestJson,
@@ -282,5 +324,6 @@ module.exports = {
   AUTH_ME_URL,
   REQUEST_USAGE_URL,
   SAND_USAGE_URL,
+  PLAN_INFO_URL,
   SAND_TIMEOUT_MS
 };

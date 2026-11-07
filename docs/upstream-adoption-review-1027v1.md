@@ -1,0 +1,22 @@
+# Selected upstream source review · 1027v1
+
+This is a source-only adoption on top of the preserved 158/159 work. No new App bundle, installer, installation, live proxy restart, account operation or publication is part of this change. Existing 159 package remains a separate older artifact. All tests use isolated synthetic data; installed or external-client acceptance is not implied.
+
+## Reviewed changes
+
+- TokScale [PR1531](https://github.com/junhoyeo/tokscale/pull/1531): a reported zero total remains a reported value; absent totals retain the existing fallback. Prior Codex and Qwen backports remain.
+- TokScale [PR1544](https://github.com/junhoyeo/tokscale/pull/1544) and [PR1550](https://github.com/junhoyeo/tokscale/pull/1550): Cursor overlapping snapshot identity and source-cache migration, adapted to the existing fork. This fork already fetches full history, so no newer incremental sync feature was added. Equivalent snapshots prefer an explicit provider cost, including free, over missing cost. Ambiguous legacy rows with several matching event IDs retain upstream's deterministic choice; this cannot prove original ownership.
+- Token Monitor [PR1145](https://github.com/Javis603/token-monitor/pull/1145), commit `e6ca86c5dc3c7acd338fea0fa29ce84a919e84a9`: unconfirmed Cursor plans and missing usage no longer become fabricated full quota. Independent verified windows and truthful zero values survive. Scoped invalidation and retries follow the canonical account, preserve stale unaffected windows, and reject ambiguous or unidentified results. A unified period is shown only with explicit or timestamp-supported evidence. No new api2 host, full unified-plan implementation or new Engine Cursor capability was added.
+- CLIProxyAPI commits [`c2dfec28`](https://github.com/router-for-me/CLIProxyAPI/commit/c2dfec28d57221be9e042d33e2e1e0da58b16542) and [`d495e24`](https://github.com/router-for-me/CLIProxyAPI/commit/d495e24cbc3965a28afd1ebdd4160eb2b7febb0e): Claude output truncation is distinguished from true prompt overflow; incomplete tool items and responses retain that status. The provider SDK stays at v8.0.38 with three exact patches. LocalProxy's separate metadata patch is unchanged.
+
+## Source and validation contract
+
+The selected scanner is `scanner-backports/1027v1/tokscale-darwin-arm64`, SHA256 `5a5e66b0db6deea3234e4f2e793ad975b2e606c3c76f7c8c09f64eea24a6e7f8`. Its review, complete replayable patch and 797-input source inventory are alongside it. Existing 1026 inputs remain unchanged. Unit groups: Cursor28, Qwen24, cache19, Codex130. Actual new binary:23 report/history cases and3 large-archive cases; these are not additional unit counts. Cold/warm cache, old-cache migration, prices, explicit free, source filters and separate history days passed.
+
+Cursor production-source regressions:95 passed, plus independent account-identity/retry review. Its shared source is copied by Desktop staging and remains frozen for the Engine loader; the Engine currently exposes only managed Codex and OpenCode quota, so this does not claim working Engine Cursor quota. No actual user account was queried.
+
+Provider tests use production gateway/SDK with synthetic HTTP:30 focused cases, followed by79 full Go test/subtest passes and vet. Patch integrity, copied SDK source and component resource checks are separate from App packaging. The fixed SDK source is verified before copying and only that copy is patched; cold Go builds may still populate dependency cache normally. Read the provider's go.py entry point for the mandatory pinned build path.
+
+Responses still emits `response.function_call_arguments.done` before the final incomplete item/response. That event closes the argument stream; this work does not claim that arbitrary external clients wait for the final status or will never execute an incomplete tool. The helper itself does not execute tools. No unreviewed event-protocol adapter was added.
+
+The Engine SOURCE freeze is updated only for the reviewed Cursor source/tests/docs, selected scanner files and matching provenance. Dependency roots, lock, runtime pins, security adaptations and original release hashes remain. Both build paths select the same new scanner; an unbuilt Intel backport remains rejected. Integration gates and their exact logs are recorded in the task's upstream-adoption-1027v1 evidence directory. No version bump is made until a future authorized release build.

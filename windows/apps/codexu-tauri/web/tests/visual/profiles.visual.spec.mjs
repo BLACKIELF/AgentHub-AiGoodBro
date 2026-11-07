@@ -4,8 +4,7 @@ import { installTauriStub } from './tauri-stub.mjs';
 
 test.beforeEach(async ({ page }) => {
   await page.clock.setFixedTime(new Date(FIXED_NOW_ISO));
-  await installTauriStub(page, { settings: SYNTHETIC_SETTINGS, dashboard: SYNTHETIC_DASHBOARD });
-  await page.addInitScript(() => {
+  await installTauriStub(page, { settings: SYNTHETIC_SETTINGS, dashboard: SYNTHETIC_DASHBOARD }, () => {
     const invoke = window.__TAURI_INTERNALS__.invoke;
     window.profileCalls = [];
     window.failProfileSave = false;

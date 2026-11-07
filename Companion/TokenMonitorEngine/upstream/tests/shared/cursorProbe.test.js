@@ -60,7 +60,8 @@ test('parseGrokBotUsage keeps an exhausted included allowance visible', () => {
     resetsAt: '2026-06-01T00:00:00.000Z',
     windowMinutes: 7 * 24 * 60,
     hasAvailableUsage: false,
-    hasNonZeroIncludedLimit: true
+    hasNonZeroIncludedLimit: true,
+    isUnified: false
   });
 });
 
@@ -109,7 +110,8 @@ test('parseUsageSummary falls back to enterprise pooled usage when individual da
 
 test('parseUsageSummary tolerates missing fields', () => {
   const result = parseUsageSummary({});
-  assert.equal(result.planPercent, 0);
+  assert.equal(result.planPercent, null);
+  assert.equal(result.onDemandUsedUsd, null);
   assert.equal(result.planUsedUsd, 0);
   assert.equal(result.billingCycleEnd, null);
   assert.equal(result.membershipType, null);
@@ -187,7 +189,7 @@ test('probe includes legacy request usage when auth returns a user id', async ()
   assert.equal(result.usage.grokBot.hasAvailableUsage, false);
   assert.deepEqual(
     calls.map((call) => call.path).sort(),
-    ['/api/auth/me', '/api/dashboard/get-sand-usage-status', '/api/usage-summary', '/api/usage?user=user_1'].sort()
+    ['/api/auth/me', '/api/dashboard/get-plan-info', '/api/dashboard/get-sand-usage-status', '/api/usage-summary', '/api/usage?user=user_1'].sort()
   );
   assert.deepEqual(new Set(calls.map((call) => call.headers.Referer)), new Set(['https://cursor.com/dashboard']));
   const sand = calls.find((call) => call.path === '/api/dashboard/get-sand-usage-status');
@@ -245,6 +247,6 @@ test('probe destroys in-flight HTTPS requests when the parent signal aborts', as
   const result = await pending;
   assert.equal(result.ok, false);
   assert.equal(result.error.kind, 'network');
-  assert.equal(requests.length, 3);
+  assert.equal(requests.length, 4);
   assert.ok(requests.every((request) => request.destroyed));
 });

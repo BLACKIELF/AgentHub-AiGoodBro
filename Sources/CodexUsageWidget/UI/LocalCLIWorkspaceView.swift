@@ -503,7 +503,16 @@ struct LocalCLIWorkspaceView: View {
         isStale: Bool,
         layout: AccountWorkspaceLayout
     ) -> some View {
-        if isStale, result != nil {
+        if result?.serverRetryAt != nil,
+            let explanation = LocalCLIAccountPresentation.quotaExplanation(kind: .claudeCode, result: result, language: language)
+        {
+            Text((isStale ? language.text("上次快照 · ", "Previous snapshot · ") : "") + explanation)
+                .font(.caption2).foregroundStyle(WorkspaceStatusForeground.warning)
+                .lineLimit(layout == .cards ? 1 : nil)
+                .minimumScaleFactor(layout == .cards ? 0.8 : 1)
+                .frame(height: layout == .cards ? 14 : nil, alignment: .leading)
+                .help(explanation)
+        } else if isStale, result != nil {
             Text(language.text("上次快照 · 请刷新确认", "Previous snapshot · Refresh to confirm"))
                 .font(.caption2).foregroundStyle(WorkspaceStatusForeground.warning)
                 .lineLimit(layout == .cards ? 1 : nil)
@@ -700,8 +709,18 @@ struct LocalCLIWorkspaceView: View {
     private func compactHomeQuotaWindow(_ window: LocalCLIQuotaWindow) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             CompactQuotaView(
-                title: window.label, remaining: 100 - window.usedPercent,
+                title: LocalCLIAccountPresentation.quotaTitle(kind: kind, window: window, language: language), remaining: 100 - window.usedPercent,
                 reset: window.resetsAt, isExpiry: window.isExpiry, horizontalDetails: compactHomeSummary)
+            if kind == .kimi, window.id == "monthly" {
+                let format = FloatingPointFormatStyle<Double>.number.precision(.fractionLength(0...2)).locale(language.locale)
+                Text(
+                    language.text(
+                        "已用 \(window.usedPercent.formatted(format))% · 剩余 \((100 - window.usedPercent).formatted(format))%",
+                        "Used \(window.usedPercent.formatted(format))% · Left \((100 - window.usedPercent).formatted(format))%")
+                )
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             if let amount = window.tokenAmountText {
                 Text(amount).font(.system(size: 10).monospacedDigit())
                     .lineLimit(1).minimumScaleFactor(0.85).help(amount)

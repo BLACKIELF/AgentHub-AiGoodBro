@@ -179,6 +179,30 @@ private func test(_ name: String, _ body: () throws -> Void) {
     }
 }
 
+// A child exits without unwinding after a durable rename, so recovery tests do
+// not accidentally prove only the exception rollback path.
+if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--registration-crash" {
+    guard let testRoot = ProcessInfo.processInfo.environment["CAMNEXT_DISPATCH_TEST_ROOT"],
+        CommandLine.arguments[2].hasPrefix(testRoot + "/"),
+        let stopIndex = Int(CommandLine.arguments[3]), [1, 2].contains(stopIndex)
+    else { exit(74) }
+    let root = URL(fileURLWithPath: CommandLine.arguments[2])
+    let support = root.appendingPathComponent(DispatchParticipationPaths.supportDirectoryName)
+    let paths = DispatchParticipationPaths(
+        snapshot: support.appendingPathComponent(DispatchParticipationPaths.snapshotFileName),
+        hubConfig: root.appendingPathComponent("hub/config.json"),
+        codes: support.appendingPathComponent(DispatchParticipationPaths.codesFileName))
+    let identity = DispatchParticipationSync.Identity(
+        profileID: "profile-primary", homePath: root.appendingPathComponent("primary-home").path,
+        email: "fixture-primary", accountID: "account-primary")
+    var sync = DispatchParticipationSync(paths: paths)
+    sync.checkpoint = { point in
+        if case .afterReplace(let index) = point, index == stopIndex { _exit(73) }
+    }
+    do { _ = try sync.apply(.registration, identity: identity) } catch { exit(75) }
+    exit(76)
+}
+
 test("enable, preserve unknown fields, then disable and re-enable") {
     let f = try DispatchFixture()
     let originals = try f.contents()
@@ -1067,6 +1091,191 @@ if geteuid() == 0 {
     }
 } else {
     print("SKIP: unowned LaunchAgent fixture requires root; ownership guard unchanged.")
+}
+
+private func prepareAddedProfile(_ f: DispatchFixture, enabled: Bool? = nil, priority: Bool = false) throws {
+    // Normalize the existing catalog first, then model a unique verified sign-in
+    // that has saved its profile but has not yet gained a Hub home or code.
+    _ = try f.sync.setParticipation(false, identity: f.identity)
+    try mutate(f.paths.hubConfig) { hub in
+        hub["accounts"] = (hub["accounts"] as! [[String: Any]]).filter { $0["home"] as? String != f.identity.homePath }
+    }
+    try mutate(f.paths.snapshot) { snapshot in
+        var profiles = snapshot["profiles"] as! [[String: Any]]
+        for index in [0, 1] {
+            if let enabled { profiles[index]["automaticSwitchParticipation"] = enabled }
+            else { profiles[index].removeValue(forKey: "automaticSwitchParticipation") }
+            profiles[index]["prioritizeDispatch"] = priority
+        }
+        profiles[0]["dispatchRegistrationPending"] = true
+        profiles[0]["dispatchRegistrationIdentity"] = DispatchParticipationSync.registrationIdentityHash(f.identity.accountID)
+        snapshot["profiles"] = profiles
+    }
+}
+
+test("verified added account gains one mapping without changing choices or existing accounts") {
+    let f = try DispatchFixture()
+    try prepareAddedProfile(f, priority: true)
+    let originalProfiles = try object(f.paths.snapshot)["profiles"] as! [[String: Any]]
+    let originalHub = try object(f.paths.hubConfig)["accounts"] as! [[String: Any]]
+    let originalCodes = try object(f.paths.codes)["accounts"] as! [[String: Any]]
+    _ = try f.sync.apply(.registration, identity: f.identity)
+    var expectedProfiles = originalProfiles
+    expectedProfiles[0].removeValue(forKey: "dispatchRegistrationPending")
+    expectedProfiles[0].removeValue(forKey: "dispatchRegistrationIdentity")
+    try require((try object(f.paths.snapshot)["profiles"] as! NSArray) == expectedProfiles as NSArray)
+    let hub = try object(f.paths.hubConfig)["accounts"] as! [[String: Any]]
+    try require(hub.count == originalHub.count + 1)
+    try require((Array(hub.dropLast()) as NSArray) == originalHub as NSArray)
+    try require(hub.last?["home"] as? String == f.identity.homePath)
+    try require(hub.last?["dispatchDisabled"] as? Bool == false)
+    let codes = try object(f.paths.codes)["accounts"] as! [[String: Any]]
+    try require(codes.count == originalCodes.count + 1)
+    try require((Array(codes.dropLast()) as NSArray) == originalCodes as NSArray)
+    try require(codes.last?["profileId"] as? String == f.identity.profileID)
+    try require(codes.last?["alias"] as? String == hub.last?["alias"] as? String)
+    try require(codes.last?["active"] as? Bool == true)
+    // Recovery of an already committed mapping cannot create another alias/code.
+    try mutate(f.paths.snapshot) { value in
+        var profiles = value["profiles"] as! [[String: Any]]
+        profiles[0]["dispatchRegistrationPending"] = true
+        profiles[0]["dispatchRegistrationIdentity"] = DispatchParticipationSync.registrationIdentityHash(f.identity.accountID)
+        value["profiles"] = profiles
+    }
+    _ = try f.sync.apply(.registration, identity: f.identity)
+    try require((try object(f.paths.hubConfig)["accounts"] as! NSArray) == hub as NSArray)
+    try require((try object(f.paths.codes)["accounts"] as! NSArray) == codes as NSArray)
+}
+
+test("added account registration preserves an explicit dispatch opt-out") {
+    let f = try DispatchFixture()
+    try prepareAddedProfile(f, enabled: false)
+    _ = try f.sync.apply(.registration, identity: f.identity)
+    let profiles = try object(f.paths.snapshot)["profiles"] as! [[String: Any]]
+    try require(profiles[0]["automaticSwitchParticipation"] as? Bool == false)
+    try require(profiles[1]["automaticSwitchParticipation"] as? Bool == false)
+    let hub = try object(f.paths.hubConfig)["accounts"] as! [[String: Any]]
+    let code = try DispatchParticipationSync.validatedEntries(object(f.paths.codes)).first { $0["profileId"] as? String == f.identity.profileID }
+    try require(hub.last?["dispatchDisabled"] as? Bool == true)
+    try require(code?["active"] as? Bool == false)
+    try require(profiles[0]["dispatchRegistrationPending"] == nil)
+}
+
+test("registration retires retry intent only after both mappings are durable") {
+    let f = try DispatchFixture()
+    try prepareAddedProfile(f)
+    var order: [Int] = []
+    var sync = f.sync
+    sync.checkpoint = { point in
+        if case .afterReplace(let index) = point {
+            order.append(index)
+            let profiles = try object(f.paths.snapshot)["profiles"] as! [[String: Any]]
+            try require((profiles[0]["dispatchRegistrationPending"] as? Bool == true) == (index != 0))
+        }
+    }
+    _ = try sync.apply(.registration, identity: f.identity)
+    try require(order == [1, 2, 0])
+}
+
+test("registration never enrolls an unmarked existing account") {
+    let f = try DispatchFixture()
+    let original = try f.contents()
+    try expectError(.invalidSnapshot) { _ = try f.sync.apply(.registration, identity: f.identity) }
+    try require(f.contents() == original)
+}
+
+test("registration rejects a claimed alias without changing any saved file") {
+    let f = try DispatchFixture()
+    try prepareAddedProfile(f)
+    try mutate(f.paths.hubConfig) { hub in
+        var accounts = hub["accounts"] as! [[String: Any]]
+        accounts[0]["alias"] = "profile-" + f.identity.profileID
+        hub["accounts"] = accounts
+    }
+    let original = try f.contents()
+    try expectError(.ambiguousAccount) { _ = try f.sync.apply(.registration, identity: f.identity) }
+    try require(f.contents() == original)
+}
+
+test("registration rejects changed identity and retains the pending verified account") {
+    let f = try DispatchFixture()
+    try prepareAddedProfile(f)
+    let original = try f.contents()
+    let changed = DispatchParticipationSync.Identity(
+        profileID: f.identity.profileID, homePath: f.identity.homePath,
+        email: f.identity.email, accountID: "different-account")
+    try expectError(.identityMismatch) { _ = try f.sync.apply(.registration, identity: changed) }
+    try require(f.contents() == original)
+}
+
+test("saved registration intent cannot follow a replacement account identity") {
+    let f = try DispatchFixture()
+    try prepareAddedProfile(f)
+    try mutate(f.paths.snapshot) { snapshot in
+        var profiles = snapshot["profiles"] as! [[String: Any]]
+        for index in [0, 1] {
+            var saved = profiles[index]["lastSnapshot"] as! [String: Any]
+            saved["accountID"] = "replacement-account"
+            profiles[index]["lastSnapshot"] = saved
+        }
+        snapshot["profiles"] = profiles
+    }
+    let original = try f.contents()
+    let replacement = DispatchParticipationSync.Identity(
+        profileID: f.identity.profileID, homePath: f.identity.homePath,
+        email: f.identity.email, accountID: "replacement-account")
+    try expectError(.identityMismatch) { _ = try f.sync.apply(.registration, identity: replacement) }
+    try require(f.contents() == original)
+}
+
+for failedIndex in 0...2 {
+    test("failed registration replacement \(failedIndex) restores pending state and retries safely") {
+        let f = try DispatchFixture()
+        try prepareAddedProfile(f)
+        let original = try f.contents()
+        var sync = f.sync
+        sync.checkpoint = { point in
+            if case .afterReplace(let index) = point, index == failedIndex { throw DispatchTestFailure.injected }
+        }
+        try expectError(.rolledBack) { _ = try sync.apply(.registration, identity: f.identity) }
+        try require(f.contents() == original)
+        _ = try f.sync.apply(.registration, identity: f.identity)
+        let profiles = try object(f.paths.snapshot)["profiles"] as! [[String: Any]]
+        try require(profiles[0]["dispatchRegistrationPending"] == nil)
+        let accounts = try object(f.paths.hubConfig)["accounts"] as! [[String: Any]]
+        try require(accounts.filter { $0["home"] as? String == f.identity.homePath }.count == 1)
+        try f.checkNoTemporaryFiles()
+    }
+}
+
+for interruptedIndex in [1, 2] {
+    test("interrupted registration after mapping \(interruptedIndex) resumes one identity") {
+        let f = try DispatchFixture()
+        try prepareAddedProfile(f)
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        child.arguments = ["swift", "-module-cache-path", f.root.appendingPathComponent("child-module-cache").path,
+                           CommandLine.arguments[0], "--registration-crash", f.root.path, String(interruptedIndex)]
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+        try child.run()
+        let deadline = Date().addingTimeInterval(45)
+        while child.isRunning, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        if child.isRunning { child.terminate(); child.waitUntilExit(); throw DispatchTestFailure.assertion }
+        child.waitUntilExit()
+        try require(child.terminationStatus == 73)
+        let interrupted = try object(f.paths.snapshot)["profiles"] as! [[String: Any]]
+        try require(interrupted[0]["dispatchRegistrationPending"] as? Bool == true)
+        _ = try f.sync.apply(.registration, identity: f.identity)
+        let recovered = try object(f.paths.snapshot)["profiles"] as! [[String: Any]]
+        try require(recovered[0]["dispatchRegistrationPending"] == nil)
+        let hub = try object(f.paths.hubConfig)["accounts"] as! [[String: Any]]
+        let codes = try DispatchParticipationSync.validatedEntries(object(f.paths.codes))
+        try require(hub.filter { $0["home"] as? String == f.identity.homePath }.count == 1)
+        try require(codes.filter { $0["profileId"] as? String == f.identity.profileID }.count == 1)
+        try require(codes.first { $0["profileId"] as? String == f.identity.profileID }?["code"] as? String == "D")
+        try f.checkNoTemporaryFiles()
+    }
 }
 
 print("All \(passed) dispatch participation tests passed (temporary fixtures only).")

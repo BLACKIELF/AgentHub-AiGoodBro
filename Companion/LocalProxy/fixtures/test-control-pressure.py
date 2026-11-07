@@ -8,6 +8,7 @@ from pathlib import Path
 import queue
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -18,7 +19,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--bridge-source', type=Path)
 parser.add_argument('--expect-legacy-disconnect', action='store_true')
 args = parser.parse_args()
-with tempfile.TemporaryDirectory(prefix='lp-pressure-', dir='/private/tmp') as temporary:
+with tempfile.TemporaryDirectory(prefix='lp-pressure-', dir=os.environ.get("TMPDIR")) as temporary:
     folder = Path(temporary)
     os.chmod(folder, 0o700)
     source = (args.bridge_source or ROOT/'Sources/CodexUsageWidget/Services/LocalProxyBridge.swift').read_text()
@@ -30,7 +31,7 @@ with tempfile.TemporaryDirectory(prefix='lp-pressure-', dir='/private/tmp') as t
         # Build before any client starts its bounded wait. Cold compilation
         # must not consume the held admission clients' eight-second budget.
         control_test = folder/'control-tests'
-        subprocess.run(['go','test','-mod=readonly','-c','-o',str(control_test),'.'],
+        subprocess.run([sys.executable,'go.py','test','-mod=readonly','-c','-o',str(control_test),'.'],
                        cwd=ROOT/'Companion/LocalProxy',check=True,timeout=90)
     path = folder/'b.sock'
     child = subprocess.Popen([str(folder/'fixture')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,

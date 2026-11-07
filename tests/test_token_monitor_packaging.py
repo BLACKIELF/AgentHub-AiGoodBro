@@ -128,6 +128,74 @@ class PackagingTests(unittest.TestCase):
         tree_manifest.write_bytes(m.canonical(pin))
         self.assertEqual(m.read_json(tree / 'vendor/manifest.json')['tokscalePin']['commit'], m.FORK)
 
+    def test_local_scanner_is_hash_pinned_and_shared_with_desktop(self):
+        blob = macho() + b'selected-backport'
+        rel = 'scanner-backports/1027v1/tokscale-darwin-arm64'
+        target = self.source / rel
+        target.parent.mkdir(parents=True)
+        target.write_bytes(blob)
+        pin = self.pin['tokscale']['platforms']['darwin-arm64']
+        pin.pop('url')
+        pin.update(localBackport=True, localArtifact=rel, sha256=m.digest(blob))
+        self.pin['finalSource']['files'][rel] = m.digest(blob)
+        with patch.object(m, 'fetch', side_effect=AssertionError('local scanner must not download')):
+            self.assertEqual(m.scanner_binary(self.source, self.pin, 'arm64', self.cache, True), blob)
+        target.write_bytes(blob + b'changed')
+        with self.assertRaisesRegex(m.PackagingError, 'local_scanner_integrity_mismatch'):
+            m.scanner_binary(self.source, self.pin, 'arm64', self.cache, True)
+        target.unlink()
+        target.symlink_to(self.source / 'bridge.cjs')
+        with self.assertRaisesRegex(m.PackagingError, 'missing_local_scanner'):
+            m.scanner_binary(self.source, self.pin, 'arm64', self.cache, True)
+
+    def test_reviewed_backport_refuses_an_unbuilt_target_architecture(self):
+        with self.assertRaisesRegex(m.PackagingError, 'backport_unavailable_for_architecture'):
+            m.load_production(m.SOURCE, 'x64')
+
+    def test_declared_backport_cannot_select_a_legacy_platform_binary(self):
+        # Exercise the real frozen-source gate without modifying reviewed files.
+        production = m.read_json(m.SOURCE / 'SOURCE.json')
+        for change, expected in (
+            ({'localBackport': None}, 'backport_platform_selection_mismatch'),
+            ({'localBackport': False}, 'backport_platform_selection_mismatch'),
+            ({'sha256': production['tokscale']['platforms']['darwin-arm64']['upstreamSHA256']}, 'backport_artifact_pin_mismatch'),
+            ({'localArtifact': 'scanner-backports/1026v1/tokscale-darwin-arm64'}, 'unapproved_local_scanner'),
+        ):
+            with self.subTest(change=change):
+                candidate = json.loads(json.dumps(production))
+                platform = candidate['tokscale']['platforms']['darwin-arm64']
+                platform.update(change)
+                if platform.get('localBackport') is None:
+                    platform.pop('localBackport')
+                    platform['url'] = platform['upstreamURL']
+                    platform['sha256'] = platform['upstreamSHA256']
+                original_read = m.read_json
+                with patch.object(m, 'read_json', side_effect=lambda path: candidate if path == m.SOURCE / 'SOURCE.json' else original_read(path)):
+                    with self.assertRaisesRegex(m.PackagingError, expected):
+                        m.load_production(m.SOURCE, 'arm64')
+        candidate = json.loads(json.dumps(production))
+        candidate['tokscale'].pop('localBackport')
+        platform = candidate['tokscale']['platforms']['darwin-arm64']
+        platform.pop('localBackport')
+        platform.pop('localArtifact')
+        platform['url'] = platform['upstreamURL']
+        platform['sha256'] = platform['upstreamSHA256']
+        original_read = m.read_json
+        with patch.object(m, 'read_json', side_effect=lambda path: candidate if path == m.SOURCE / 'SOURCE.json' else original_read(path)):
+            with self.assertRaisesRegex(m.PackagingError, 'backport_source_manifest_mismatch'):
+                m.load_production(m.SOURCE, 'arm64')
+
+    def test_local_scanner_rejects_wrong_architecture(self):
+        rel = 'scanner-backports/1027v1/tokscale-darwin-arm64'
+        target = self.source / rel
+        target.parent.mkdir(parents=True)
+        blob = macho('x64')
+        target.write_bytes(blob)
+        self.pin['tokscale']['platforms']['darwin-arm64'].update(localBackport=True, localArtifact=rel, sha256=m.digest(blob))
+        self.pin['finalSource']['files'][rel] = m.digest(blob)
+        with self.assertRaisesRegex(m.PackagingError, 'wrong_native_architecture'):
+            m.scanner_binary(self.source, self.pin, 'arm64', self.cache, True)
+
     def test_catalog_required_and_copied(self):
         tree, _ = self.stage()
         self.assertEqual((tree / 'client-catalog.json').read_bytes(), b'{"clients":[]}')

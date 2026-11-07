@@ -561,6 +561,7 @@ struct TokenMonitorEdgeDockCardView: View {
     var viewportHeight: CGFloat? = nil
     var onRefresh: (() -> Void)? = nil
     var onContentHeightChange: (CGFloat) -> Void = { _ in }
+    @Environment(\.workspacePreviewDate) private var previewDate
     @State private var byModel = false
     @State private var accountPage = 0
 
@@ -767,7 +768,7 @@ struct TokenMonitorEdgeDockCardView: View {
             }
             HStack(spacing: 5) {
                 if let balance = account.creditBalance {
-                    CreditBalanceView(presentation: balance, compact: true)
+                    CreditBalanceView(presentation: balance, compact: true, title: language.text("剩余点数", "Credits left"))
                 }
                 Spacer(minLength: 3)
                 if account.activeRequestCount > 1 {
@@ -779,6 +780,13 @@ struct TokenMonitorEdgeDockCardView: View {
                 }
             }
             .font(.system(size: 9)).foregroundStyle(.secondary)
+            ResetCardExpiryFactsView(
+                count: account.resetCardCount, expiries: account.resetCardExpiries,
+                fetchedAt: account.resetCardFetchedAt, readSucceeded: account.resetCardReadSucceeded,
+                now: previewDate ?? Date(), expiring: false
+            )
+            .font(.system(size: 9))
+            .accessibilityIdentifier("edge-dock-proxy-reset-expiry")
         }
         .padding(.vertical, 3)
     }
@@ -923,6 +931,15 @@ struct TokenMonitorEdgeDockCardView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(cell.providerID == "claude" ? language.text("余额", "Balance") : (cell.headlineMetricName ?? language.text("剩余额度", "Remaining quota")))
                         .font(.system(size: 11, weight: .medium))
+                    if cell.providerID == "kimi", cell.headlineMetricID == "monthly",
+                        let remaining = cell.percentRemaining, remaining.isFinite, (0...100).contains(remaining)
+                    {
+                        let usedText = String(format: "%.2f%%", 100 - remaining)
+                        let remainingText = String(format: "%.2f%%", remaining)
+                        Text(language.text("已用 \(usedText) · 剩余 \(remainingText)", "Used \(usedText) · Left \(remainingText)"))
+                            .font(.system(size: 9)).monospacedDigit().foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     if let reset = cell.headlineResetLabel, reset != "—" {
                         Text(language.text("重置：", "Reset: ") + reset)
                             .font(.system(size: 9)).monospacedDigit().foregroundStyle(.secondary)
@@ -938,11 +955,13 @@ struct TokenMonitorEdgeDockCardView: View {
                         ? language.text(
                             "没有匹配到所选账号。请到侧边栏设置重新选择；不会自动改用其他账号。",
                             "The selected account could not be matched. Choose it again in Edge Dock settings; another account is never substituted automatically.")
-                        : cell.providerID == "claude"
-                            ? language.text("当前暂无可核对的余额", "No verified balance right now")
-                            : cell.providerID == "grok"
-                                ? language.text("订阅额度待核对，请在账号页刷新。", "Refresh the account page to verify subscription quota.")
-                                : language.text("当前暂无可核对的额度", "No verified limit right now")
+                        : cell.providerID == "kimi" && cell.headlineMetricID == "monthly"
+                            ? language.text("总额度暂未返回；下方保留已读取的 Code 额度。", "The total quota was not returned; available Code limits are shown below.")
+                            : cell.providerID == "claude"
+                                ? language.text("当前暂无可核对的余额", "No verified balance right now")
+                                : cell.providerID == "grok"
+                                    ? language.text("订阅额度待核对，请在账号页刷新。", "Refresh the account page to verify subscription quota.")
+                                    : language.text("当前暂无可核对的额度", "No verified limit right now")
                 )
                 .font(.system(size: 10)).foregroundStyle(.secondary)
             }

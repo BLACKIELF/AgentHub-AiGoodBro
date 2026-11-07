@@ -158,7 +158,9 @@ async function main(testDependencies = {}) {
     finish(response, 0);
   } catch (error) {
     scope.dispose();
-    const code = error instanceof BridgeError
+    const cleanupConfirmed = await scope.waitForCleanup();
+    if (!cleanupConfirmed) diagnostics.error('descendant-cleanup-unconfirmed', { phase: 'cancel' });
+    const code = !cleanupConfirmed ? CODES.INTERNAL_ERROR : error instanceof BridgeError
       ? error.code
       : scope.timedOut
         ? CODES.TIMEOUT

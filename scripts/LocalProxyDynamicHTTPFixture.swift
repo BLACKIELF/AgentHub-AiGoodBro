@@ -193,6 +193,9 @@ private struct DynamicHTTPFailure: Error {
         self.usage = usage
         HubConsoleModel.fixtureAvailability = .idle
         let store = LocalProxyQueueStore(usageStore: usage)
+        // The protocol fixture child binds an ephemeral loopback port. Never
+        // target the user's production default port from an isolated test.
+        store.preferences.listenPort = 0
         self.store = store
         for id in members { store.setAccountEnabled(id: id, enabled: true) }
         store.setOptIn(true)

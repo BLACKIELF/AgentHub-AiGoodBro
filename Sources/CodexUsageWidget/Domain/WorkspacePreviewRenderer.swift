@@ -20,10 +20,26 @@ enum WorkspacePreviewRenderer {
         accountCount: Int, root: URL, language: WidgetLanguage = .zh, includeQuotaEdgeCases: Bool = false, includeExpiryEdgeCases: Bool = false,
         includeResetExpiryDisclosureFixtures: Bool = false, referenceDate: Date? = nil
     ) -> UsageStore {
+        fixtureStore(
+            accountCount: accountCount, root: root, language: language,
+            includeQuotaEdgeCases: includeQuotaEdgeCases, includeExpiryEdgeCases: includeExpiryEdgeCases,
+            includeResetExpiryDisclosureFixtures: includeResetExpiryDisclosureFixtures, referenceDate: referenceDate,
+            includeProxyLayoutFixtures: false)
+    }
+
+    private static func fixtureStore(
+        accountCount: Int, root: URL, language: WidgetLanguage = .zh, includeQuotaEdgeCases: Bool = false, includeExpiryEdgeCases: Bool = false,
+        includeResetExpiryDisclosureFixtures: Bool = false, referenceDate: Date? = nil,
+        includeProxyLayoutFixtures: Bool
+    ) -> UsageStore {
         let now = referenceDate ?? Date()
         let fiveHour = RateWindow(usedPercent: 18, windowDurationMins: 300, resetsAt: now.addingTimeInterval(10_800))
         let sevenDay = RateWindow(usedPercent: 37, windowDurationMins: 10_080, resetsAt: now.addingTimeInterval(259_200))
         let profiles = (0..<max(accountCount, 1)).map { index in
+            let proxyUnknown = includeProxyLayoutFixtures && index == 1
+            let proxyExpired = includeProxyLayoutFixtures && index == 2
+            let proxyStale = includeProxyLayoutFixtures && index == 3
+            let proxyBalances: [String?] = ["2240.36", nil, "0", "499.96"]
             let isPro = includeQuotaEdgeCases && index == 0
             let weeklyExhausted = includeQuotaEdgeCases && (index == 1 || index == 2)
             let profileFiveHour = includeQuotaEdgeCases && (index == 0 || index == 2) ? nil : CodexQuotaWindowSnapshot(fiveHour)
@@ -50,8 +66,12 @@ enum WorkspacePreviewRenderer {
                     accountID: "synthetic-preview-account-\(index)",
                     limitId: "codex", limitName: "Codex", fiveHour: profileFiveHour,
                     sevenDay: profileSevenDay, monthly: nil,
-                    availableResetCredits: includeResetExpiryDisclosureFixtures ? 3 : 2,
-                    resetCreditExpiries: includeResetExpiryDisclosureFixtures
+                    availableResetCredits: proxyUnknown ? nil : includeProxyLayoutFixtures ? (proxyExpired ? 1 : 3) : includeResetExpiryDisclosureFixtures ? 3 : 2,
+                    resetCreditExpiries: includeProxyLayoutFixtures
+                        ? (proxyUnknown ? nil : proxyExpired
+                            ? [now.addingTimeInterval(-3_600)]
+                            : [now.addingTimeInterval(259_200), now.addingTimeInterval(3_600), now.addingTimeInterval(86_400)])
+                        : includeResetExpiryDisclosureFixtures
                         ? (index == 0
                             ? [now.addingTimeInterval(259_200), now.addingTimeInterval(3_600), now.addingTimeInterval(86_400)]
                             : index == 1
@@ -60,9 +80,10 @@ enum WorkspacePreviewRenderer {
                         : includeExpiryEdgeCases
                             ? [now.addingTimeInterval(864_000), now.addingTimeInterval(index.isMultiple(of: 2) ? 129_600 : 259_200)]
                             : [now.addingTimeInterval(864_000)],
-                    creditBalance: includeResetExpiryDisclosureFixtures ? "123.45" : nil,
-                    creditBalanceUnlimited: includeResetExpiryDisclosureFixtures ? false : nil,
-                    fetchedAt: now, appServerVersion: nil
+                    creditBalance: includeProxyLayoutFixtures ? proxyBalances[index % proxyBalances.count] : includeResetExpiryDisclosureFixtures ? "123.45" : nil,
+                    creditBalanceUnlimited: includeProxyLayoutFixtures || includeResetExpiryDisclosureFixtures ? false : nil,
+                    fetchedAt: proxyStale ? now.addingTimeInterval(-600) : now, appServerVersion: nil,
+                    quotaReadSucceeded: !proxyUnknown
                 ),
                 resetCreditHistory: index == 0
                     ? [
@@ -379,6 +400,9 @@ enum WorkspacePreviewRenderer {
     }
 
     @MainActor static func render(to directory: URL, language: WidgetLanguage = .zh) -> Bool {
+        if CommandLine.arguments.contains("--preview-proxy-only") {
+            return renderProxyLayouts(to: directory)
+        }
         if CommandLine.arguments.contains("--preview-reset-card-expiries-only") {
             return renderResetCardExpiries(to: directory, language: language)
         }
@@ -774,6 +798,92 @@ enum WorkspacePreviewRenderer {
         }
     }
 
+    /// This entry never creates Home views, forecast stores or inbox stores.
+    @MainActor private static func renderProxyLayouts(to directory: URL) -> Bool {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("aigoodbro-proxy-preview-\(UUID().uuidString)")
+        let suite = "AiGoodBro.proxy-preview.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { return false }
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: root)
+        }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let catalog = PaletteCatalog.loadFromMainBundle()
+            let referenceDate = ISO8601DateFormatter().date(from: "2026-12-31T15:00:00Z")!
+            let store = fixtureStore(
+                accountCount: 8, root: root, referenceDate: referenceDate,
+                includeProxyLayoutFixtures: true)
+            var preferences = LocalProxyPreferences()
+            preferences.accountPolicies = Dictionary(
+                uniqueKeysWithValues: store.profiles.enumerated().map { index, profile in
+                    (
+                        profile.id,
+                        LocalProxyAccountPolicy(
+                            fiveHourUsedLimit: index == 2 ? 80 : 100, allowsCredits: index == 2,
+                            creditPrimaryFloor: index == 2 ? 3000 : nil, creditSecondaryFloor: index == 2 ? 1000 : nil)
+                    )
+                })
+            let proxy = LocalProxyQueueStore(
+                usageStore: store, previewPreferences: preferences,
+                previewPendingRegistrationIDs: Set(store.profiles.prefix(1).map(\.id)))
+            var images: [[String: Any]] = []
+            for locale in [WidgetLanguage.zh, .en] {
+                for scheme in [ColorScheme.dark, .light] {
+                    let tokens = catalog.resolve(id: "codexu.liquid-keycap", appearance: scheme == .dark ? .dark : .light)
+                    for detail in [nil, "connection", "network", "quota"] as [String?] {
+                        let proxyView = LocalProxyQueueView(model: proxy, language: locale, previewExpandedDetail: detail)
+                            .defaultAppStorage(defaults)
+                            .environment(\.widgetLanguage, locale)
+                            .environment(\.visualTokens, tokens)
+                            .environment(\.workspacePreviewDate, referenceDate)
+                            .environment(\.workspacePreviewOpaqueSurface, true)
+                            .environment(\.colorScheme, scheme)
+                        let suffix = detail.map { "-" + $0 } ?? ""
+                        for width in [CGFloat(680), 830] {
+                            let heights: [CGFloat] =
+                                (width == 680 && (detail == nil || detail == "connection"))
+                                ? [440, 660] : [660]
+                            for height in heights {
+                                let heightSuffix = height == 660 ? "" : "-h\(Int(height))"
+                                let filename = "compact-proxy-\(locale.rawValue)-\(scheme == .dark ? "dark" : "light")-\(Int(width))\(heightSuffix)\(suffix).png"
+                                try renderView(
+                                    proxyView, size: CGSize(width: width, height: height), scheme: scheme,
+                                    to: directory.appendingPathComponent(filename))
+                                images.append(["file": filename, "width": Int(width), "height": Int(height), "language": locale.rawValue])
+                            }
+                        }
+                    }
+                }
+            }
+            let expected = [WidgetLanguage.zh, .en].flatMap { locale in
+                store.profiles.map { profile -> [String: Any] in
+                    let snapshot = profile.lastSnapshot!
+                    let disclosure = ResetCardPresentation.expiryDisclosure(
+                        count: snapshot.availableResetCredits, expiries: snapshot.resetCreditExpiries ?? [],
+                        fetchedAt: snapshot.fetchedAt, readSucceeded: snapshot.quotaReadSucceeded == true,
+                        now: referenceDate, language: locale)
+                    return [
+                        "fixture": profile.id, "language": locale.rawValue,
+                        "count": snapshot.availableResetCredits ?? -1, "points": snapshot.creditBalance ?? "unknown",
+                        "inline": disclosure.inlineText ?? "", "hover": disclosure.tooltip,
+                    ]
+                }
+            }
+            try JSONSerialization.data(withJSONObject: [
+                "syntheticOnly": true, "referenceUTC": "2026-12-31T15:00:00Z", "images": images,
+                "globalCreditsEnabled": false, "expectedPresentation": expected,
+                "scope": "Production proxy UI; isolated fixture store and defaults; known, unknown, expired and stale reset evidence; no home views, clicks or saves",
+            ], options: [.prettyPrinted, .sortedKeys])
+                .write(to: directory.appendingPathComponent("compact-proxy-manifest.json"), options: .atomic)
+            print("Proxy previews rendered: 40 production UI images; isolated synthetic fixtures and defaults; no home or live-account actions")
+            return true
+        } catch {
+            print("Proxy preview failed: \(error.localizedDescription)")
+            return false
+        }
+    }
+
     /// A quick, focused visual check of the approved eight-account home design.
     /// Invoke through the existing --render-workspace-previews entry point with
     /// --preview-design-home-only; the full acceptance matrix remains unchanged.
@@ -853,18 +963,6 @@ enum WorkspacePreviewRenderer {
                 filename: "home-cards-light-liquid-keycap-1440-reduce-transparency-viewport.png")
             // Compact layout checks include expanded sections, both languages,
             // and the real proxy view, with synthetic account data only.
-            var proxyPreferences = LocalProxyPreferences()
-            proxyPreferences.creditFallback = true
-            proxyPreferences.accountPolicies = Dictionary(
-                uniqueKeysWithValues: store.profiles.enumerated().map { index, profile in
-                    (
-                        profile.id,
-                        LocalProxyAccountPolicy(
-                            fiveHourUsedLimit: index == 2 ? 80 : 100, allowsCredits: index != 1,
-                            creditPrimaryFloor: index == 2 ? 3000 : nil, creditSecondaryFloor: index == 2 ? 1000 : nil)
-                    )
-                })
-            let proxy = LocalProxyQueueStore(usageStore: store, previewPreferences: proxyPreferences)
             for locale in [WidgetLanguage.zh, .en] {
                 settings.language = locale
                 defaults.set(true, forKey: "AiGoodBro.home.section.recommended-announcements.expanded")
@@ -944,31 +1042,8 @@ enum WorkspacePreviewRenderer {
                             to: directory.appendingPathComponent("invite-\(variant)-\(locale.rawValue)-\(scheme == .dark ? "dark" : "light").png"))
                     }
                 }
-                for scheme in [ColorScheme.dark, .light] {
-                    let tokens = catalog.resolve(id: settings.paletteID, appearance: scheme == .dark ? .dark : .light)
-                    for detail in [nil, "connection", "network", "quota"] as [String?] {
-                        let proxyView = LocalProxyQueueView(model: proxy, language: locale, previewExpandedDetail: detail)
-                            .environment(\.widgetLanguage, locale)
-                            .environment(\.visualTokens, tokens)
-                            .environment(\.workspacePreviewDate, referenceDate)
-                            .environment(\.workspacePreviewOpaqueSurface, true)
-                            .environment(\.colorScheme, scheme)
-                        let suffix = detail.map { "-" + $0 } ?? ""
-                        for width in [CGFloat(680), 830] {
-                            let heights: [CGFloat] =
-                                (width == 680 && (detail == nil || detail == "connection"))
-                                ? [440, 660] : [660]
-                            for height in heights {
-                                let heightSuffix = height == 660 ? "" : "-h\(Int(height))"
-                                try renderView(
-                                    proxyView, size: CGSize(width: width, height: height), scheme: scheme,
-                                    to: directory.appendingPathComponent(
-                                        "compact-proxy-\(locale.rawValue)-\(scheme == .dark ? "dark" : "light")-\(Int(width))\(heightSuffix)\(suffix).png"))
-                            }
-                        }
-                    }
-                }
             }
+            guard renderProxyLayouts(to: directory) else { throw CocoaError(.fileWriteUnknown) }
             // Append sizing coverage after the established 33 captures so their
             // fixtures remain unchanged. Every key belongs to this preview suite.
             func renderSizingViewport(locale: WidgetLanguage, wide: Bool) throws {
@@ -1038,6 +1113,8 @@ enum WorkspacePreviewRenderer {
                 Saved section sizes and unequal reset columns at 1440 points;
                 expanded Skills and a scrolling account section at 820 points, in both languages.
                 Proxy input and quota layout at 680 and 830 points, in light and dark.
+                Proxy-only reference clock: 2026-12-31 23:00 Asia/Shanghai; synthetic reset expiries,
+                distinct balances, unknown and past records; global credit fallback stays disabled.
                 """
             try note.write(
                 to: directory.appendingPathComponent("README.txt"),

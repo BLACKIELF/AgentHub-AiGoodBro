@@ -69,7 +69,7 @@ type fakeBridge struct {
 
 func newFakeBridge(t *testing.T) *fakeBridge {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "lp-")
+	dir, err := os.MkdirTemp(os.TempDir(), "lp-")
 	if err != nil {
 		t.Fatal(err)
 	}

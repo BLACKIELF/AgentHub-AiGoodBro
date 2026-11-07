@@ -18,8 +18,8 @@ private final class MockTransport: LocalCLIQuotaTransport, @unchecked Sendable {
     private let reply: LocalCLIHTTPResponse
     private(set) var request: URLRequest?
 
-    init(status: Int = 200, data: Data) {
-        reply = LocalCLIHTTPResponse(statusCode: status, headers: [:], data: data)
+    init(status: Int = 200, headers: [String: String] = [:], data: Data) {
+        reply = LocalCLIHTTPResponse(statusCode: status, headers: headers, data: data)
     }
 
     func response(for request: URLRequest) async throws -> LocalCLIHTTPResponse {
@@ -46,6 +46,7 @@ struct LocalCLIQuotaFixture {
         try await testGrokLoad()
         try await testKimiLoadAndDeviceIsolation()
         try await testClaudeLoadAndProfileIsolation()
+        try await testClaudeRetryAfter()
         try await testClaudeCredentialChangesDiscardQuota()
         try testCCSwitchSchema20()
         try await testClaudeRelay()
@@ -240,8 +241,8 @@ struct LocalCLIQuotaFixture {
         try expect(kimi.windows.map(\.usedPercent) == [25, 25], "Kimi windows")
         try expect(kimi.windows[1].label == "5-hour", "Kimi window label")
         let pools = try LocalCLIQuotaReader.parseKimi(data(#"{"usages":{"limit_5h":{"used_ratio":0.625,"reset_time":"2026-09-24T00:00:00Z"},"limit_7d":{"used_ratio":0.125},"limit_month_total":{"used_ratio":0.0056}}}"#))
-        try expect(pools.windows.count == 3 && zip(pools.windows.map(\.usedPercent), [62.5, 12.5, 0.56]).allSatisfy { abs($0 - $1) < 0.000001 }, "Kimi ratio pools use percentages and keep monthly")
-        try expect(pools.windows.first?.resetsAt != nil, "Kimi ratio pool reset date")
+        try expect(pools.windows.count == 3 && zip(pools.windows.map(\.usedPercent), [0.56, 62.5, 12.5]).allSatisfy { abs($0 - $1) < 0.000001 }, "Kimi ratio pools use percentages and keep monthly")
+        try expect(pools.windows.first(where: { $0.id == "session" })?.resetsAt != nil, "Kimi ratio pool reset date")
         let partialPools = try LocalCLIQuotaReader.parseKimi(data(#"{"usages":{"limit_5h":{"used_ratio":0},"limit_7d":{"reset_time":"2026-09-24T00:00:00Z"}}}"#))
         try expect(partialPools.windows.count == 1 && partialPools.windows[0].usedPercent == 0, "Kimi distinguishes missing from zero")
         let mixedPools = try LocalCLIQuotaReader.parseKimi(data(#"{"usages":{"limit_month_total":{"used_ratio":0.25},"limit_7d":{"used_ratio":0.3}},"usage":{"limit":100,"used":75},"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":100,"used":10}},{"window":{"duration":10080,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":100,"used":75}}]}"#))
@@ -442,6 +443,32 @@ struct LocalCLIQuotaFixture {
         try expect(recoveryTransport.request?.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-fresh-keychain", "recovery uses the fresh same-scope token")
         let isolated = await recoveryReader.load(profile: profile(.claudeCode, URL(fileURLWithPath: "/synthetic-linked")), now: Date(timeIntervalSince1970: 1_800_000_000))
         try expect(isolated.state == .needsLogin && recoveryReads == 2, "expired linked Claude account never reads global Keychain")
+    }
+
+    private static func testClaudeRetryAfter() async throws {
+        try await withDirectory { directory in
+            let credential = data(#"{"claudeAiOauth":{"accessToken":"synthetic-retry-token","expiresAt":2000000000000}}"#)
+            try credential.write(to: directory.appendingPathComponent(".credentials.json"))
+            let transport = MockTransport(status: 429, headers: ["retry-after": "3600"], data: Data())
+            let reader = LocalCLIQuotaReader(transport: transport, claudeKeychainReader: { nil })
+            let before = Date()
+            let limited = await reader.load(profile: profile(.claudeCode, directory))
+            let after = Date()
+            try expect(limited.state == .rateLimited && limited.windows.isEmpty
+                && limited.serverRetryAt.map { $0 >= before.addingTimeInterval(3600) && $0 <= after.addingTimeInterval(3600) } == true,
+                "native Claude HTTP 429 preserves server deadline at response receipt")
+            let invalid = await LocalCLIQuotaReader(
+                transport: MockTransport(status: 429, headers: ["retry-after": "nan"], data: Data()), claudeKeychainReader: { nil }
+            ).load(profile: profile(.claudeCode, directory))
+            try expect(invalid.state == .rateLimited && invalid.serverRetryAt == nil, "native malformed Retry-After keeps normal backoff")
+            var reads = 0
+            let changed = await LocalCLIQuotaReader(transport: transport, fileReader: { _, _, _ in
+                reads += 1
+                return reads == 1 ? credential : nil
+            }, claudeKeychainReader: { nil }).load(profile: profile(.claudeCode, directory))
+            try expect(changed.messageCode == "local_cli_claude_credentials_changed" && changed.serverRetryAt == nil,
+                "native late 429 cannot publish a deadline for changed credentials")
+        }
     }
 
     private static func testClaudeCredentialChangesDiscardQuota() async throws {

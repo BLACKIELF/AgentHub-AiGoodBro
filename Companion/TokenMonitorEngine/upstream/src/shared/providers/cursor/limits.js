@@ -54,23 +54,51 @@ function cursorBillingWindow(label, fields = {}) {
   };
 }
 
+function cursorPlanType(usage) {
+  if (usage.planInfo) return usage.planInfo.isMerged === true ? 'unified' : 'legacy';
+  if (usage.grokBot) return usage.grokBot.isUnified === true ? 'unified' : 'legacy';
+  return 'unknown';
+}
+
+function cursorIncludedWindow(usage, billingResetsAt) {
+  if (finiteNumber(usage.planPercent) === null) return null;
+  const period = usage.planInfo?.includedUsagePeriod;
+  const weekly = period === 'weekly' || (!period && usage.grokBot?.isUnified === true && usage.grokBot.windowMinutes === 10080);
+  if (!weekly && period !== 'monthly') return null;
+  return {
+    kind: weekly ? 'weekly' : 'billing',
+    label: 'Included usage',
+    usedPercent: usage.planPercent,
+    resetsAt: weekly
+      ? usage.planInfo?.includedUsageResetsAt || (usage.grokBot?.isUnified === true ? usage.grokBot.resetsAt : null) || null
+      : billingResetsAt,
+    windowMinutes: weekly ? 7 * 24 * 60 : null,
+    resetDescription: '',
+    showMeter: true
+  };
+}
+
 function cursorOnDemandWindow(usage, resetsAt) {
-  const personalUsed = finiteNumber(usage.onDemandUsedUsd) ?? 0;
   const personalLimit = finiteNumber(usage.onDemandLimitUsd);
-  const teamUsed = finiteNumber(usage.teamOnDemandUsedUsd) ?? 0;
   const teamLimit = finiteNumber(usage.teamOnDemandLimitUsd);
+  const personalRemaining = finiteNumber(usage.onDemandRemainingUsd);
+  const teamRemaining = finiteNumber(usage.teamOnDemandRemainingUsd);
+  const inferredUsed = (limit, remaining) => limit !== null && remaining !== null
+    && limit >= 0 && remaining >= 0 && remaining <= limit ? limit - remaining : null;
+  const personalUsed = finiteNumber(usage.onDemandUsedUsd) ?? inferredUsed(personalLimit, personalRemaining);
+  const teamUsed = finiteNumber(usage.teamOnDemandUsedUsd) ?? inferredUsed(teamLimit, teamRemaining);
   let used;
   let limit = null;
   let remaining = null;
 
-  if (personalLimit !== null && personalLimit > 0) {
+  if (personalLimit !== null && personalLimit > 0 && personalUsed !== null) {
     used = personalUsed;
     limit = personalLimit;
-    remaining = finiteNumber(usage.onDemandRemainingUsd);
-  } else if (teamLimit !== null && teamLimit > 0) {
+    remaining = personalRemaining;
+  } else if (teamLimit !== null && teamLimit > 0 && teamUsed !== null) {
     used = teamUsed;
     limit = teamLimit;
-    remaining = finiteNumber(usage.teamOnDemandRemainingUsd);
+    remaining = teamRemaining;
   } else if (personalUsed > 0) {
     used = personalUsed;
   } else if (teamUsed > 0) {
@@ -125,13 +153,17 @@ async function fetchCursorAccountLimits(account, deps = {}) {
   }
 
   const { usage } = result;
-  const resetsAt = cursorResetIso(usage);
+  const resetsAt = cursorResetIso(usage) || usage.planInfo?.billingCycleEnd || null;
+  const planType = cursorPlanType(usage);
   const hasRequestUsage = finiteNumber(usage.requestsUsed) !== null
     && finiteNumber(usage.requestsLimit) !== null
     && usage.requestsLimit > 0;
   const windows = [];
 
-  if (hasRequestUsage) {
+  if (planType === 'unified') {
+    const includedWindow = cursorIncludedWindow(usage, resetsAt);
+    if (includedWindow) windows.push(includedWindow);
+  } else if (planType === 'legacy' && hasRequestUsage) {
     windows.push(cursorBillingWindow('Requests', {
       usedPercent: percentFromUsedLimit(usage.requestsUsed, usage.requestsLimit),
       used: usage.requestsUsed,
@@ -141,7 +173,7 @@ async function fetchCursorAccountLimits(account, deps = {}) {
       windowMinutes: null,
       resetDescription: usage.membershipType ? `Cursor ${usage.membershipType}` : ''
     }));
-  } else if (finiteNumber(usage.autoPercent) !== null || finiteNumber(usage.apiPercent) !== null) {
+  } else if (planType === 'legacy' && (finiteNumber(usage.autoPercent) !== null || finiteNumber(usage.apiPercent) !== null)) {
     if (finiteNumber(usage.autoPercent) !== null) windows.push(cursorBillingWindow('Cursor Models', {
       usedPercent: usage.autoPercent,
       resetsAt,
@@ -152,7 +184,7 @@ async function fetchCursorAccountLimits(account, deps = {}) {
       resetsAt,
       windowMinutes: null
     }));
-  } else if (usage.hasOverallUsage && finiteNumber(usage.planPercent) !== null) {
+  } else if (planType === 'legacy' && usage.hasOverallUsage && finiteNumber(usage.planPercent) !== null) {
     windows.push(cursorBillingWindow('Overall', {
       usedPercent: usage.planPercent,
       used: usage.planUsedUsd,
@@ -163,7 +195,7 @@ async function fetchCursorAccountLimits(account, deps = {}) {
     }));
   }
 
-  if (usage.grokBot?.hasNonZeroIncludedLimit === true && finiteNumber(usage.grokBot.usedPercent) !== null) {
+  if (planType === 'legacy' && usage.grokBot?.hasNonZeroIncludedLimit === true && finiteNumber(usage.grokBot.usedPercent) !== null) {
     windows.push({
       kind: 'weekly',
       label: 'Grok Bot',
@@ -175,18 +207,22 @@ async function fetchCursorAccountLimits(account, deps = {}) {
     });
   }
 
-  if (usage.hasTeamPooledUsage || finiteNumber(usage.teamPooledLimitUsd) !== null || (finiteNumber(usage.teamPooledUsedUsd) !== null && usage.teamPooledUsedUsd > 0)) {
-    const remaining = finiteNumber(usage.teamPooledRemainingUsd)
-      ?? (finiteNumber(usage.teamPooledLimitUsd) !== null
-        ? Math.max(0, usage.teamPooledLimitUsd - (finiteNumber(usage.teamPooledUsedUsd) || 0))
-        : null);
+  const teamLimit = finiteNumber(usage.teamPooledLimitUsd);
+  const teamRemaining = finiteNumber(usage.teamPooledRemainingUsd);
+  const teamUsed = finiteNumber(usage.teamPooledUsedUsd)
+    ?? (teamLimit !== null && teamRemaining !== null && teamLimit >= 0 && teamRemaining >= 0 && teamRemaining <= teamLimit
+      ? teamLimit - teamRemaining : null);
+  const teamPercent = finiteNumber(usage.teamPooledPercent) ?? percentFromUsedLimit(teamUsed, teamLimit);
+  if (teamUsed !== null || teamRemaining !== null || teamPercent !== null) {
+    const remaining = teamRemaining ?? (teamLimit !== null && teamUsed !== null ? Math.max(0, teamLimit - teamUsed) : null);
     windows.push(cursorBillingWindow('Team pool', {
-      usedPercent: finiteNumber(usage.teamPooledPercent) ?? percentFromUsedLimit(usage.teamPooledUsedUsd, usage.teamPooledLimitUsd),
-      used: usage.teamPooledUsedUsd,
+      usedPercent: teamPercent,
+      used: teamUsed,
       limit: usage.teamPooledLimitUsd,
       remaining,
       resetsAt,
       windowMinutes: null,
+      showMeter: teamPercent !== null,
       resetDescription: 'Shared team usage pool.'
     }));
   }
@@ -200,10 +236,17 @@ async function fetchCursorAccountLimits(account, deps = {}) {
     accountLabel: result.user?.email || account.label || formatCursorMembership(usage.membershipType) || '',
     accountEmail: result.user?.email || '',
     planLabel: formatCursorMembership(usage.membershipType),
-    status: 'ok',
+    status: planType !== 'legacy' && windows.length === 0 ? 'unavailable' : 'ok',
     source: 'web',
     updatedAt,
-    windows
+    windows,
+    // Internal runtime hint: unverified legacy seats must not return from cache.
+    ...(planType === 'unknown' || (planType === 'unified' && !windows.some((window) => window.label === 'Included usage')) ? {
+      invalidateCachedWindowLabels: [
+        'Requests', 'Cursor Models', 'Other Models', 'Overall',
+        ...(planType === 'unified' ? ['Grok Bot'] : [])
+      ]
+    } : {})
   };
 }
 

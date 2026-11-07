@@ -7,8 +7,7 @@ test.beforeEach(async ({ page }) => {
   // consume the initial countdown. Start earlier so pauseAt always moves forward.
   await page.clock.install({ time: new Date('2026-09-22T11:00:00Z') });
   await page.clock.pauseAt(new Date('2026-09-22T12:00:00Z'));
-  await installTauriStub(page, { settings: SYNTHETIC_SETTINGS, dashboard: SYNTHETIC_DASHBOARD });
-  await page.addInitScript(() => {
+  await installTauriStub(page, { settings: SYNTHETIC_SETTINGS, dashboard: SYNTHETIC_DASHBOARD }, () => {
     const base = window.__TAURI_INTERNALS__.invoke;
     window.feedCalls = 0;
     window.__TAURI_INTERNALS__.invoke = async (cmd, args) => {

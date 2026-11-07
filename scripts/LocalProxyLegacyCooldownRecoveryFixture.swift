@@ -119,6 +119,58 @@ extension LocalProxyHostFixtures {
             try write(records)
             expect((try? LocalProxyLegacyCooldownRecovery.prepare(at: directory, profileID: targetID)) != nil, "missing legacy error migration remains explicitly recoverable")
         }
+        func mixedRows() -> [[String: Any]] {
+            let quotaError: [String: Any] = ["httpStatus": 429, "credentialQuota": true]
+            var records = rows()
+            records[0]["error"] = quotaError
+            records[1]["reason"] = "credential_quota"
+            records[1]["error"] = ["httpStatus": 0]
+            records[1]["credentialQuotaPropagated"] = true
+            records.insert(["id": targetID, "model": "fixture-clean", "reason": "credential_quota",
+                "until": until, "recover": until, "exceeded": true, "credentialQuotaPropagated": true,
+                "error": ["httpStatus": 0, "absent": true]], at: 2)
+            records.insert(["id": targetID, "model": "fixture-trigger", "reason": "quota",
+                "until": until, "recover": until, "exceeded": true, "error": quotaError], at: 3)
+            return records
+        }
+        try reset()
+        let mixedBytes = try write(mixedRows())
+        store.rebuildRows()
+        expect(store.legacyCooldownRecoveryIDs == [targetID], "mixed legacy and proven quota records remain explicitly recoverable")
+        let mixedConfirmation = await prepareFromUI()
+        expect(mixedConfirmation?.recordCount == 4 && store.recoverLegacyCooldown(for: targetID), "mixed records use the existing fresh-proof stopped-helper recovery")
+        let mixedRetained = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [[String: Any]]
+        expect(NSArray(array: mixedRetained).isEqual(to: [unrelated]), "mixed recovery preserves other accounts exactly")
+        let mixedBackups = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("cooldown-legacy-backup-") }
+        try expect(mixedBackups.contains { try Data(contentsOf: $0) == mixedBytes }, "mixed recovery backs up the exact source bytes")
+        for condition in ["independent", "unknown-independent", "null-independent", "egress", "invalid-kind", "ordinary-429", "forbidden",
+            "clean-without-provenance", "invalid-boolean", "numeric-propagation", "string-propagation", "contradictory-absence",
+            "different-deadline", "unknown-field", "unproven-root", "all-known"] {
+            var records = mixedRows()
+            switch condition {
+            case "independent": records[1]["independent"] = ["until": until, "reason": "forbidden"]
+            case "unknown-independent": records = rows(); records[1]["independent"] = ["until": until, "reason": "forbidden"]
+            case "null-independent": records[1]["independent"] = NSNull()
+            case "egress": records[1]["kind"] = "egress"
+            case "invalid-kind": records[1]["kind"] = 0
+            case "ordinary-429": records[3]["error"] = ["httpStatus": 429]
+            case "forbidden": records[1]["error"] = ["httpStatus": 403]
+            case "clean-without-provenance": records[2].removeValue(forKey: "credentialQuotaPropagated")
+            case "invalid-boolean": records[0]["error"] = ["httpStatus": 429, "credentialQuota": 1]
+            case "numeric-propagation": records[1]["credentialQuotaPropagated"] = 1
+            case "string-propagation": records[1]["credentialQuotaPropagated"] = "true"
+            case "contradictory-absence": records[2]["error"] = ["httpStatus": 0, "absent": true, "credentialQuota": true]
+            case "different-deadline": records[1]["until"] = format.string(from: now.addingTimeInterval(86401))
+            case "unknown-field": records[1]["futureRestriction"] = true
+            case "unproven-root": records[0]["error"] = ["httpStatus": 0]
+            default: records[1]["error"] = ["httpStatus": 429, "credentialQuota": true]
+            }
+            let before = try write(records)
+            expect((try? LocalProxyLegacyCooldownRecovery.prepare(at: directory, profileID: targetID)) == nil,
+                "mixed recovery rejects \(condition)")
+            try expect(Data(contentsOf: file) == before, "rejected mixed candidate is unchanged")
+        }
         var independent = rows(); independent[1]["reason"] = "rate_limit"
         try write(independent)
         expect((try? LocalProxyLegacyCooldownRecovery.prepare(at: directory, profileID: targetID)) == nil, "independent model limit is retained")

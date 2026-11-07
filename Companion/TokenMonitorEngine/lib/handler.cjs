@@ -135,6 +135,9 @@ async function executeRequest(rawRequest, deps) {
   }
 
   const targets = sourcesModule.buildTargets(resolvedSources.sources);
+  if (request.operation === 'collectUsage') {
+    for (const target of targets) target.cacheDirectory = request.cacheDirectory;
+  }
   deps.targetResources.push(...targets);
 
 

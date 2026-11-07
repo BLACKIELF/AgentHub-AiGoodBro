@@ -427,11 +427,46 @@ def load_production(source, arch):
     need(npin['url'] == f'https://nodejs.org/dist/v22.23.2/node-v22.23.2-darwin-{arch}.tar.gz',
          'unapproved_node_url')
     tpin = pin['tokscale']['platforms']['darwin-' + arch]
+    vendor_backport = read_json(source / 'upstream/scripts/vendor/tokscale.json').get('localBackport')
+    need(pin['tokscale'].get('localBackport') == vendor_backport, 'backport_source_manifest_mismatch')
+    if pin['tokscale'].get('localBackport'):
+        need('darwin-' + arch in pin['tokscale']['localBackport'].get('platforms', {}),
+             'backport_unavailable_for_architecture')
+        need(tpin.get('localBackport') is True, 'backport_platform_selection_mismatch')
     sha_pin(tpin['sha256'])
-    need(tpin['url'] == f'https://github.com/Javis603/tokscale/releases/download/token-monitor-fa5f0c13/tokscale-darwin-{arch}',
-         'unapproved_tokscale_url')
+    if tpin.get('localBackport'):
+        need(arch == 'arm64' and tpin.get('localArtifact') == 'scanner-backports/1027v1/tokscale-darwin-arm64'
+             and not tpin.get('url'), 'unapproved_local_scanner')
+        backport = pin['tokscale'].get('localBackport', {})
+        need(backport.get('version') == '1027v1' and backport.get('baseCommit') == FORK
+             and backport.get('pullRequests') == [1439, 1453, 1456, 1527, 1531, 1544, 1550], 'incorrect_backport_provenance')
+        need(backport.get('platforms', {}).get('darwin-' + arch, {}).get('sha256') == tpin['sha256'],
+             'backport_artifact_pin_mismatch')
+        for key in ('sourceInventorySHA256', 'patchSHA256', 'reviewEvidenceSHA256'):
+            sha_pin(backport.get(key))
+        need(final['files'].get(tpin['localArtifact']) == tpin['sha256'], 'local_scanner_not_frozen')
+    else:
+        need(tpin['url'] == f'https://github.com/Javis603/tokscale/releases/download/token-monitor-fa5f0c13/tokscale-darwin-{arch}',
+             'unapproved_tokscale_url')
     need(tpin['package'] == '@tokscale/cli-darwin-' + arch, 'wrong_tokscale_package')
     return pin
+
+
+def scanner_binary(source, pin, arch, cache, offline):
+    """One exact scanner selection shared by Engine and Desktop staging."""
+    tpin = pin['tokscale']['platforms']['darwin-' + arch]
+    if tpin.get('localBackport'):
+        rel = str(relative(tpin['localArtifact']))
+        target = source / rel
+        need(target.is_file() and not target.is_symlink(), 'missing_local_scanner')
+        need(target.stat().st_size <= MAX_ARCHIVE, 'local_scanner_too_large')
+        blob = target.read_bytes()
+        need(digest(blob) == sha_pin(tpin['sha256'])
+             and pin['finalSource']['files'].get(rel) == tpin['sha256'], 'local_scanner_integrity_mismatch')
+    else:
+        blob = fetch(tpin['url'], cache, sha_pin(tpin['sha256']), 'sha256', offline)
+    check_arch(blob, arch)
+    return blob
 
 
 def assemble(source, tree, pin, arch, cache, offline, shared_runtime=None):
@@ -479,8 +514,7 @@ def assemble(source, tree, pin, arch, cache, offline, shared_runtime=None):
         (tree / 'RUNTIME.json').write_bytes(canonical(shared_runtime))
     target = tree / 'vendor/node_modules' / tpin['package'] / 'bin/tokscale'
     need(target.is_file(), 'missing_tokscale_binary_slot')
-    blob = fetch(tpin['url'], cache, sha_pin(tpin['sha256']), 'sha256', offline)
-    check_arch(blob, arch)
+    blob = scanner_binary(source, pin, arch, cache, offline)
     target.write_bytes(blob)
     target.chmod(0o755)
     # Record the real extracted package metadata and selected scanner pin. Source
@@ -501,6 +535,13 @@ def assemble(source, tree, pin, arch, cache, offline, shared_runtime=None):
                    'missing': 0, 'versionMismatches': 0}
     }
     vendor_manifest['tokscalePin']['platformSha256'] = vendor_pin['platforms']
+    if pin['tokscale'].get('localBackport'):
+        need(vendor_pin.get('localBackport') == pin['tokscale']['localBackport'], 'backport_pin_mismatch')
+        vendor_manifest['tokscalePin']['localBackport'] = pin['tokscale']['localBackport']
+        vendor_manifest['tokscalePin']['platformSha256'] = {
+            key: {**entry, **pin['tokscale']['localBackport']['platforms'].get(key, {})}
+            for key, entry in vendor_pin['platforms'].items()
+        }
     (tree / 'vendor/manifest.json').write_bytes(canonical(vendor_manifest))
     validate_layout(tree, packages)
     validate_import_boundaries(tree)

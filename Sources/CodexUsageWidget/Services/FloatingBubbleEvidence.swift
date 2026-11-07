@@ -47,7 +47,7 @@ enum FloatingBubbleEvidence {
                 let valid = window.usedPercent.isFinite && (0...100).contains(window.usedPercent)
                 let expired = provider.id == "grok" && window.resetsAt.map { $0 <= now } == true
                 return TokenMonitorFloatingBubbleMetric(
-                    id: window.id, name: window.label,
+                    id: window.id, name: LocalCLIAccountPresentation.quotaTitle(kind: profile.kind, window: window, language: language),
                     sourceID: "\(provider.id):\(profile.id):\(window.id)", fetchedAt: quota?.fetchedAt,
                     isStale: stale || expired, isAvailable: loggedIn && !expired,
                     value: valid ? .percentRemaining(100 - window.usedPercent) : .unknown,

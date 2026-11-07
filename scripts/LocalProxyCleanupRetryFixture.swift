@@ -136,6 +136,7 @@ import Foundation
             "direct cleanup refuses a child that is still alive")
         await finish(newChild)
         exhausted.childExited(newChild)
+        await exhausted.exitCleanupTask?.value
 
         let (superseded, endedChild, _, _) = try makeStore()
         await finish(endedChild)
@@ -170,6 +171,7 @@ import Foundation
             "all cleanup attempts preserve the unrelated live run")
         await finish(foreignChild)
         foreign.childExited(foreignChild)
+        await foreign.exitCleanupTask?.value
         try expect(activity.read().leases.filter(\.occupied).isEmpty, "fixture closes only its own remaining disposable run")
         print("PASS: \(checks) cleanup retry checks; isolated support, synthetic leases and disposable sleep children")
     }

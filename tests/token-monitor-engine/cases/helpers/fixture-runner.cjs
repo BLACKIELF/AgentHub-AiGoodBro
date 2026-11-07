@@ -12,8 +12,15 @@ function hang() {
   return new Promise(() => {});
 }
 
-async function runTokscale() {
-  if (MODE === 'hang') return hang();
+async function runTokscale(input) {
+  if (MODE === 'hang' || MODE === 'cleanup-unconfirmed') return hang();
+  if (MODE === 'stubborn-child') {
+    const marker = require('node:path').join(input.env.TOKSCALE_CONFIG_DIR, 'fixture-child.pid');
+    require('node:child_process').spawn(process.execPath, ['-e',
+      "process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);",
+      marker], { env: { ...input.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: 'ignore' });
+    return hang();
+  }
   return {
     entries: [{
       client: 'claude',

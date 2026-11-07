@@ -212,6 +212,56 @@ struct CodexResetNoticeDeliveryStore {
         }
     }
 
+    /// Persist consumption confirmation separately from transport outcome. A
+    /// disabled channel records a baseline and never acquires historical intent.
+    func enqueueManualReset(
+        accountHash: String, manual: CodexManualResetNotice, notifyFeishu: Bool, now: Date = Date()
+    ) throws -> [CodexResetNoticeDelivery] {
+        let candidate = CodexResetNoticeCandidate(accountHash: accountHash, observedAt: manual.confirmedAt, content: .manualReset(manual))
+        guard candidate.isValid, manual.confirmedAt <= now else { throw Failure.invalidState }
+        return try mutate { ledger in
+            for record in ledger.records.values {
+                if case .manualReset(let existing) = record.item, existing.eventHash == manual.eventHash {
+                    guard record.accountHash == accountHash && existing.profileHash == manual.profileHash else { throw Failure.invalidState }
+                }
+            }
+            let key = CodexResetNoticeKey.item(candidate.content, accountHash: accountHash, channel: .feishu)
+            if ledger.records[key] == nil {
+                ledger.records[key] = .init(
+                    accountHash: accountHash, channel: .feishu, item: candidate.content,
+                    phase: notifyFeishu ? .pending : .baseline, observedAt: manual.confirmedAt, updatedAt: now)
+            }
+            guard let record = ledger.records[key], record.phase == .pending else { return [] }
+            // A repeated callback cannot replace the original confirmed time.
+            return [.init(channel: .feishu, candidate: .init(accountHash: record.accountHash, observedAt: record.observedAt, content: record.item))]
+        }
+    }
+
+    func pendingManualResets() throws -> [CodexResetNoticeDelivery] {
+        try locked {
+            let ledger = try readUnlocked()
+            return ledger.records.values.compactMap { record in
+                guard record.channel == .feishu, record.phase == .pending, case .manualReset = record.item else { return nil }
+                return .init(channel: .feishu, candidate: .init(accountHash: record.accountHash, observedAt: record.observedAt, content: record.item))
+            }.sorted { $0.candidate.observedAt < $1.candidate.observedAt }
+        }
+    }
+
+    /// Suppress only the duplicate one-card change notice around exactly one
+    /// confirmed consume. Expiry, multiple consumes and ambiguous intervals keep
+    /// the original honest balance-change reporting.
+    func hasSingleManualReset(accountHash: String, previous: Int, available: Int, after: Date, through: Date) throws -> Bool {
+        guard (0...1_000_000).contains(previous), (0...1_000_000).contains(available), previous - available == 1, after < through else { return false }
+        return try locked {
+            let ledger = try readUnlocked()
+            let matches = ledger.records.values.filter { record in
+                guard record.accountHash == accountHash, case .manualReset(let manual) = record.item else { return false }
+                return manual.confirmedAt > after && manual.confirmedAt <= through
+            }
+            return matches.count == 1
+        }
+    }
+
     /// Must run before invoking an existing sender. The caller retains its
     /// credential/configuration revision and admission gates at the send boundary.
     func reserve(
@@ -347,6 +397,11 @@ struct CodexResetNoticeDeliveryStore {
     }
 
     private func current(_ candidate: CodexResetNoticeCandidate, ledger: CodexResetNoticeDeliveryLedger, now: Date) -> Bool {
+        if case .manualReset(let manual) = candidate.content {
+            let key = CodexResetNoticeKey.item(candidate.content, accountHash: candidate.accountHash, channel: .feishu)
+            return candidate.isValid && manual.confirmedAt <= now && ledger.records[key]?.item == candidate.content
+                && ledger.records[key]?.accountHash == candidate.accountHash && ledger.records[key]?.observedAt == candidate.observedAt
+        }
         guard let observation = ledger.accounts[candidate.accountHash] else { return false }
         let evaluation = evaluate(observation, now: now)
         guard evaluation.verificationSucceeded else { return false }
@@ -356,6 +411,7 @@ struct CodexResetNoticeDeliveryStore {
                 && Set(cards).isSubset(of: Set(evaluation.eligibleCards))
         case .change(let change):
             return observation.observedAt >= change.observedAt && observation.availableCount == change.available
+        case .manualReset: return false  // Handled above without quota inference.
         }
     }
 
@@ -398,6 +454,8 @@ struct CodexResetNoticeDeliveryStore {
                 // or stale response from recreating a previously accepted notice.
                 guard let observedAt = ledger.accounts[record.accountHash]?.observedAt else { return true }
                 return !cards.allSatisfy { $0.expiresAt.map { $0 <= observedAt } == true }
+            case .manualReset:
+                return true  // Retain consumption and idempotency proof independent of send outcome.
             case .change:
                 guard record.phase == .sent, let watermark = watermarks[historyKey(record.accountHash, record.channel)] else { return true }
                 return record.observedAt >= watermark

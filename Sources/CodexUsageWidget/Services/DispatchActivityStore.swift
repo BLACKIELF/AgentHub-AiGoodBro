@@ -1,12 +1,15 @@
 import CryptoKit
 import Darwin
 import Foundation
+import os.log
 
 /// Versioned local contract shared with next_dispatch_activity.py. Existing
 /// unregistered CLI processes are not adopted, stopped, or declared idle here.
 struct DispatchActivityStore {
     private static let proxyRunLock = NSLock()
     private static var closedProxyRuns = Set<String>()
+    private static let registryLog = OSLog(subsystem: "com.blackielf.codex-account-manager-next", category: "dispatch-activity")
+    private static let maximumStateBytes = 2 * 1024 * 1024
     static let stateName = "dispatch-activity-v1.json"
     static let lockName = ".dispatch-activity.lock"
     static let issueName = "operations-issues-v1.jsonl"
@@ -97,6 +100,37 @@ struct DispatchActivityStore {
 
     enum Failure: Error { case invalidState, busy, accountBusy, unavailable, deadline, acquireAbandoned }
 
+    // Only fixed categories and numeric system errors enter the system log.
+    // In particular, never log paths, identities, registry data or raw errors.
+    private enum RegistryStage: String {
+        case directory, lockOpen, lockMetadata, lockAcquire, readOpen, readMetadata, readData
+        case decode, encode, limit, temporaryOpen, write, sync, publish
+    }
+    private enum RegistryCause: String { case io, invalid, capacity }
+
+    private static func logRegistryFailure(_ stage: RegistryStage, _ cause: RegistryCause, systemError: Int32 = 0) {
+        os_log(
+            "registry_failure stage=%{public}s cause=%{public}s errno=%{public}d",
+            log: registryLog, type: .error, stage.rawValue, cause.rawValue, systemError)
+    }
+
+    private static func unavailable(_ stage: RegistryStage, systemError: Int32 = 0) -> Failure {
+        logRegistryFailure(stage, systemError == ENOSPC || systemError == EDQUOT ? .capacity : .io, systemError: systemError)
+        return .unavailable
+    }
+
+    private static func systemErrorCode(_ error: Error) -> Int32 {
+        var current = error as NSError
+        for _ in 0..<4 {
+            if current.domain == NSPOSIXErrorDomain, current.code > 0, current.code <= Int(Int32.max) {
+                return Int32(current.code)
+            }
+            guard let underlying = current.userInfo[NSUnderlyingErrorKey] as? NSError else { break }
+            current = underlying
+        }
+        return 0
+    }
+
     /// A stopped run cannot admit a detached reservation even if an earlier
     /// task resumes after the next bridge has been created in this process.
     static func closeProxyRun(_ runID: String) {
@@ -140,8 +174,54 @@ struct DispatchActivityStore {
     }
 
     private func stateData() throws -> Data? {
-        try DispatchParticipationSync.readBoundedRegularFile(
-            directory.appendingPathComponent(Self.stateName), maximumBytes: 2 * 1024 * 1024, allowMissing: true)
+        // Keep the same bounded, no-follow read contract as the shared reader,
+        // but retain a safe failure stage for registry incident diagnosis.
+        let descriptor = Darwin.open(directory.appendingPathComponent(Self.stateName).path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else {
+            let code = errno
+            if code == ENOENT { return nil }
+            Self.logRegistryFailure(.readOpen, code == ENOSPC || code == EDQUOT ? .capacity : .io, systemError: code)
+            throw DispatchParticipationError.fileAccess
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var metadata = stat()
+        guard Darwin.fstat(descriptor, &metadata) == 0 else {
+            let code = errno
+            Self.logRegistryFailure(.readMetadata, .io, systemError: code)
+            throw DispatchParticipationError.fileAccess
+        }
+        guard (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG), metadata.st_size >= 0 else {
+            Self.logRegistryFailure(.readMetadata, .invalid)
+            throw DispatchParticipationError.fileAccess
+        }
+        guard metadata.st_size <= off_t(Self.maximumStateBytes) else {
+            Self.logRegistryFailure(.limit, .capacity)
+            throw DispatchParticipationError.fileAccess
+        }
+        do {
+            var result = Data()
+            while result.count <= Self.maximumStateBytes {
+                let remaining = Self.maximumStateBytes + 1 - result.count
+                guard let chunk = try handle.read(upToCount: min(64 * 1024, remaining)), !chunk.isEmpty else { break }
+                result.append(chunk)
+            }
+            guard result.count <= Self.maximumStateBytes else {
+                Self.logRegistryFailure(.limit, .capacity)
+                throw DispatchParticipationError.fileAccess
+            }
+            guard result.count == Int(metadata.st_size) else {
+                Self.logRegistryFailure(.readData, .invalid)
+                throw DispatchParticipationError.fileAccess
+            }
+            return result
+        } catch let error as DispatchParticipationError {
+            throw error
+        } catch {
+            let code = Self.systemErrorCode(error)
+            Self.logRegistryFailure(.readData, code == ENOSPC || code == EDQUOT ? .capacity : .io, systemError: code)
+            throw DispatchParticipationError.fileAccess
+        }
     }
 
     func read() throws -> Snapshot {
@@ -150,17 +230,30 @@ struct DispatchActivityStore {
     }
 
     static func decode(_ data: Data) throws -> Snapshot {
-        let snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
+        let snapshot: Snapshot
+        do {
+            snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
+        } catch {
+            logRegistryFailure(.decode, .invalid)
+            throw error
+        }
         let keys = snapshot.proxyAcquireKeys ?? []
         let highwater = snapshot.proxyRequestHighwater ?? [:]
-        guard snapshot.schemaVersion == 1, snapshot.leases.count <= 2000, keys.count <= 10000,
+        guard snapshot.schemaVersion == 1 else {
+            logRegistryFailure(.decode, .invalid)
+            throw Failure.invalidState
+        }
+        guard snapshot.leases.count <= 2000, keys.count <= 10000, highwater.count <= 10000 else {
+            logRegistryFailure(.limit, .capacity)
+            throw Failure.invalidState
+        }
+        guard
             Set(keys.map { "\($0.runID):\($0.requestID):\($0.profileKey)" }).count == keys.count,
             keys.allSatisfy({ key in
                 UUID(uuidString: key.runID) != nil && UUID(uuidString: key.requestID) != nil
                     && key.profileKey.count == 64 && key.profileKey.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
                     && key.ownerPID > 1 && (key.requestTime == nil || key.requestTime! > 0)
             }),
-            highwater.count <= 10000,
             highwater.allSatisfy({ UUID(uuidString: $0.key) != nil && $0.value > 0 }),
             Set(snapshot.leases.map(\.leaseId)).count == snapshot.leases.count,
             snapshot.leases.allSatisfy({ lease in
@@ -171,26 +264,43 @@ struct DispatchActivityStore {
                     && lease.createdAt.isFinite && lease.updatedAt.isFinite && lease.heartbeatDueAt.isFinite
                     && (activeStates.contains(lease.state) || terminalStates.contains(lease.state))
             })
-        else { throw Failure.invalidState }
+        else {
+            logRegistryFailure(.decode, .invalid)
+            throw Failure.invalidState
+        }
         return snapshot
     }
 
     private func withLock<T>(_ body: () throws -> T) throws -> T {
         var info = stat()
         if lstat(directory.path, &info) != 0 {
-            guard errno == ENOENT else { throw Failure.unavailable }
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            guard lstat(directory.path, &info) == 0 else { throw Failure.unavailable }
+            let code = errno
+            guard code == ENOENT else { throw Self.unavailable(.directory, systemError: code) }
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            } catch {
+                let code = Self.systemErrorCode(error)
+                Self.logRegistryFailure(.directory, code == ENOSPC || code == EDQUOT ? .capacity : .io, systemError: code)
+                throw error
+            }
+            guard lstat(directory.path, &info) == 0 else { throw Self.unavailable(.directory, systemError: errno) }
         }
-        guard info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(), info.st_mode & 0o077 == 0 else { throw Failure.unavailable }
+        guard info.st_mode & S_IFMT == S_IFDIR, info.st_uid == geteuid(), info.st_mode & 0o077 == 0 else {
+            Self.logRegistryFailure(.directory, .invalid)
+            throw Failure.unavailable
+        }
         let fd = Darwin.open(directory.appendingPathComponent(Self.lockName).path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard fd >= 0 else { throw Failure.unavailable }
+        guard fd >= 0 else { throw Self.unavailable(.lockOpen, systemError: errno) }
         defer { Darwin.close(fd) }
-        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
-            info.st_uid == geteuid(), info.st_nlink == 1, info.st_mode & 0o077 == 0
-        else { throw Failure.unavailable }
+        guard fstat(fd, &info) == 0 else { throw Self.unavailable(.lockMetadata, systemError: errno) }
+        guard info.st_mode & S_IFMT == S_IFREG, info.st_uid == geteuid(), info.st_nlink == 1, info.st_mode & 0o077 == 0 else {
+            Self.logRegistryFailure(.lockMetadata, .invalid)
+            throw Failure.unavailable
+        }
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
-            throw (errno == EWOULDBLOCK || errno == EAGAIN) ? Failure.busy : Failure.unavailable
+            let code = errno
+            if code == EWOULDBLOCK || code == EAGAIN { throw Failure.busy }
+            throw Self.unavailable(.lockAcquire, systemError: code)
         }
         defer { flock(fd, LOCK_UN) }
         return try body()
@@ -217,12 +327,21 @@ struct DispatchActivityStore {
             object["leases"] = records
             object["proxyAcquireKeys"] = keys
             object["proxyRequestHighwater"] = highwater
-            let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            let data: Data
+            do {
+                data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            } catch {
+                Self.logRegistryFailure(.encode, .invalid)
+                throw error
+            }
             _ = try Self.decode(data)
-            guard data.count <= 2 * 1024 * 1024 else { throw Failure.invalidState }
+            guard data.count <= Self.maximumStateBytes else {
+                Self.logRegistryFailure(.limit, .capacity)
+                throw Failure.invalidState
+            }
             let temporary = directory.appendingPathComponent(".dispatch-activity-\(UUID().uuidString)")
             let fd = Darwin.open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-            guard fd >= 0 else { throw Failure.unavailable }
+            guard fd >= 0 else { throw Self.unavailable(.temporaryOpen, systemError: errno) }
             defer {
                 Darwin.close(fd)
                 try? FileManager.default.removeItem(at: temporary)
@@ -239,7 +358,7 @@ struct DispatchActivityStore {
                     } else if written < 0, errno == EINTR, interruptRetries > 0 {
                         interruptRetries -= 1
                     } else {
-                        throw Failure.unavailable
+                        throw Self.unavailable(.write, systemError: written < 0 ? errno : 0)
                     }
                 }
             }
@@ -247,12 +366,12 @@ struct DispatchActivityStore {
             repeat {
                 synced = fsync(fd)
                 if synced == 0 { break }
-                guard errno == EINTR, interruptRetries > 0 else { throw Failure.unavailable }
+                guard errno == EINTR, interruptRetries > 0 else { throw Self.unavailable(.sync, systemError: errno) }
                 interruptRetries -= 1
             } while true
             guard synced == 0,
                 rename(temporary.path, directory.appendingPathComponent(Self.stateName).path) == 0
-            else { throw Failure.unavailable }
+            else { throw Self.unavailable(.publish, systemError: errno) }
             // Publish local admission fences only after the durable swap, while
             // competing registry admissions still cannot acquire the file lock.
             onCommit?()

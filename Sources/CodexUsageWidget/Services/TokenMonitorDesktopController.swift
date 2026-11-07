@@ -35,6 +35,7 @@ final class TokenMonitorDesktopController: ObservableObject {
     struct AllTimeUsage: Equatable, Sendable {
         let totalTokens: Int64?
         let totalCostUSD: Double?
+        var costIsPartial = false
     }
 
     /// One cached upstream reading, shared by the renderer and native rail.
@@ -66,6 +67,16 @@ final class TokenMonitorDesktopController: ObservableObject {
     }
 
     @Published private(set) var allTimeUsage = AllTimeUsage(totalTokens: nil, totalCostUSD: nil)
+    struct HomeUsage: Equatable, Sendable {
+        enum Phase: Sendable { case pending, delayed, ready, unavailable }
+        var phase: Phase = .pending
+        var revision: String?
+        var dashboardJSON: String?
+    }
+    @Published private(set) var homeUsage = HomeUsage()
+    private var homeUsageRequestID: UUID?
+    private var homeUsageScope: String?
+    private var homeUsagePendingSince: TimeInterval?
     @Published private(set) var tokenRate: TokenRate?
     var totalCostUSD: Double? { allTimeUsage.totalCostUSD }
     @Published private(set) var lastError: String?
@@ -82,17 +93,20 @@ final class TokenMonitorDesktopController: ObservableObject {
     private let supportDirectoryOverride: URL?
     private let startupAttempts: Int
     private let childExitGraceSeconds: Double
+    private let homePendingLimitSeconds: Double
 
     init(
         executableOverride: URL? = nil,
         supportDirectoryOverride: URL? = nil,
         startupAttempts: Int = 100,
-        childExitGraceSeconds: Double = 1
+        childExitGraceSeconds: Double = 1,
+        homePendingLimitSeconds: Double = 60
     ) {
         self.executableOverride = executableOverride
         self.supportDirectoryOverride = supportDirectoryOverride
         self.startupAttempts = startupAttempts
         self.childExitGraceSeconds = childExitGraceSeconds
+        self.homePendingLimitSeconds = homePendingLimitSeconds.isFinite ? max(0, homePendingLimitSeconds) : 60
     }
 
     var isBundled: Bool { executableURL != nil }
@@ -116,6 +130,70 @@ final class TokenMonitorDesktopController: ObservableObject {
         Task {
             do { try await ensureStarted() } catch { recordFailure() }
         }
+    }
+
+    /// Read the same cached presentation/history as Token Monitor. The home
+    /// view requests this only while visible; unchanged revisions transfer no
+    /// history, and this route never triggers another local log scan.
+    func refreshHomeUsage() async {
+        guard homeUsageRequestID == nil, !isShuttingDown,
+            isReady, let child = process, child.isRunning, let socketPath
+        else { return }
+        guard let scope = homeUsageScope else {
+            homeUsage.phase = .unavailable
+            return
+        }
+        let requestID = UUID()
+        homeUsageRequestID = requestID
+        let revision = homeUsage.revision
+        defer { if homeUsageRequestID == requestID { homeUsageRequestID = nil } }
+        let result = try? await Task.detached(priority: .utility) {
+            let reply = try DesktopSocket.request(
+                DesktopRequest(cmd: "homeUsage", ifRevision: revision), path: socketPath, timeout: 18)
+            guard reply.ok, let snapshot = reply.homeUsage else { throw DesktopError.invalidReply }
+            if let json = snapshot.dashboardJSON { try Self.validateHomeDashboard(json) }
+            return snapshot
+        }.value
+        guard !Task.isCancelled, homeUsageRequestID == requestID, process === child,
+            child.isRunning, !isShuttingDown, scope == homeUsageScope
+        else { return }
+        guard let result else {
+            homeUsage.phase = .unavailable
+            return
+        }
+        guard result.scopeKey == scope else {
+            homeUsagePendingSince = nil
+            homeUsage = HomeUsage(phase: .unavailable)
+            return
+        }
+        if result.pending == true {
+            let now = ProcessInfo.processInfo.systemUptime
+            if homeUsagePendingSince == nil { homeUsagePendingSince = now }
+            if homeUsage.phase != .unavailable {
+                homeUsage.phase = now - (homeUsagePendingSince ?? now) >= homePendingLimitSeconds ? .delayed : .pending
+            }
+        } else if result.unchanged == true, result.revision == homeUsage.revision, homeUsage.dashboardJSON != nil {
+            homeUsagePendingSince = nil
+            if homeUsage.phase != .ready { homeUsage.phase = .ready }
+        } else if let nextRevision = result.revision, nextRevision.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
+            let json = result.dashboardJSON
+        {
+            homeUsagePendingSince = nil
+            let next = HomeUsage(phase: .ready, revision: nextRevision, dashboardJSON: json)
+            if next != homeUsage { homeUsage = next }
+        } else {
+            homeUsage.phase = .unavailable
+        }
+    }
+
+    nonisolated static func validateHomeDashboard(_ json: String) throws {
+        guard json.utf8.count <= 8 * 1024 * 1024, let data = json.data(using: .utf8) else { throw DesktopError.invalidReply }
+        let value = try JSONDecoder().decode(TokenMonitorJSON.self, from: data)
+        try value.validate()
+        guard value["schemaVersion"]?.double == 1,
+            value["authority"]?.string == "token-monitor-desktop",
+            value["payload"]?["aggregate"]?["history"]?.object != nil
+        else { throw DesktopError.invalidReply }
     }
 
     private func openAndWait(_ route: Route) async {
@@ -330,6 +408,21 @@ final class TokenMonitorDesktopController: ObservableObject {
         }
     }
 
+    /// The user has confirmed a forced app exit. Do not wait for a possibly
+    /// blocked socket before stopping this controller's own helper.
+    func forceStopForConfirmedTermination() {
+        isShuttingDown = true
+        starting?.cancel()
+        starting = nil
+        startingID = nil
+        statusPolling?.cancel()
+        statusPolling = nil
+        hostAction = nil
+        if let child = process, child.isRunning, child.processIdentifier > 1 {
+            _ = Darwin.kill(child.processIdentifier, SIGKILL)
+        }
+    }
+
     func shutdown() {
         isShuttingDown = true
         starting?.cancel()
@@ -411,8 +504,24 @@ final class TokenMonitorDesktopController: ObservableObject {
     }
 
     private func updateAllTimeUsage(_ reply: DesktopReply?) {
-        let next = Self.validatedAllTimeUsage(tokens: reply?.allTimeTokens, costUSD: reply?.allTimeCostUsd)
+        var next = Self.validatedAllTimeUsage(tokens: reply?.allTimeTokens, costUSD: reply?.allTimeCostUsd)
+        next.costIsPartial = reply?.allTimeCostPartial == true
         if allTimeUsage != next { allTimeUsage = next }
+        let scope = reply?.homeUsageScope.flatMap {
+            $0.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil ? $0 : nil
+        }
+        if homeUsageScope != scope {
+            homeUsageScope = scope
+            homeUsageRequestID = nil
+            homeUsagePendingSince = nil
+            homeUsage = HomeUsage()
+        }
+        if reply == nil || scope == nil {
+            homeUsageRequestID = nil
+            homeUsagePendingSince = nil
+            let unavailable = HomeUsage(phase: .unavailable)
+            if homeUsage != unavailable { homeUsage = unavailable }
+        }
         updateTokenRate(reply?.tokenRate)
     }
 
@@ -459,6 +568,15 @@ private struct DesktopRequest: Encodable, Sendable {
     let cmd: String
     var view: String? = nil
     var section: String? = nil
+    var ifRevision: String? = nil
+}
+
+private struct DesktopHomeUsageReply: Decodable, Sendable {
+    let scopeKey: String?
+    let pending: Bool?
+    let unchanged: Bool?
+    let revision: String?
+    let dashboardJSON: String?
 }
 
 private struct DesktopReply: Decodable, Sendable {
@@ -468,9 +586,12 @@ private struct DesktopReply: Decodable, Sendable {
     let trayVisible: Bool?
     let allTimeTokens: Int64?
     let allTimeCostUsd: Double?
+    let allTimeCostPartial: Bool?
     let tokenRate: TokenMonitorDesktopController.TokenRate?
+    let homeUsage: DesktopHomeUsageReply?
+    let homeUsageScope: String?
 
-    enum CodingKeys: String, CodingKey { case id, ok, ready, trayVisible, allTimeTokens, allTimeCostUsd, tokenRate }
+    enum CodingKeys: String, CodingKey { case id, ok, ready, trayVisible, allTimeTokens, allTimeCostUsd, allTimeCostPartial, tokenRate, homeUsage, homeUsageScope }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(String.self, forKey: .id)
@@ -479,9 +600,12 @@ private struct DesktopReply: Decodable, Sendable {
         trayVisible = try values.decodeIfPresent(Bool.self, forKey: .trayVisible)
         allTimeTokens = try values.decodeIfPresent(Int64.self, forKey: .allTimeTokens)
         allTimeCostUsd = try values.decodeIfPresent(Double.self, forKey: .allTimeCostUsd)
+        allTimeCostPartial = try? values.decodeIfPresent(Bool.self, forKey: .allTimeCostPartial)
         // A malformed additive rate must not discard the atomic totals or
         // interfere with existing helper readiness and lifecycle behavior.
         tokenRate = try? values.decode(TokenMonitorDesktopController.TokenRate.self, forKey: .tokenRate)
+        homeUsage = try? values.decode(DesktopHomeUsageReply.self, forKey: .homeUsage)
+        homeUsageScope = try? values.decode(String.self, forKey: .homeUsageScope)
     }
 }
 
@@ -523,13 +647,15 @@ private enum DesktopSocket {
             }
         }
         var received = Data()
-        var buffer = [UInt8](repeating: 0, count: 2048)
-        while received.count < 16_384 {
+        let maximumBytes = request.cmd == "homeUsage" ? 18 * 1024 * 1024 : 16_384
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while received.count < maximumBytes {
             let count = Darwin.recv(descriptor, &buffer, buffer.count, 0)
             if count < 0, errno == EINTR { continue }
             guard count > 0 else { throw DesktopError.unavailable }
             received.append(contentsOf: buffer.prefix(count))
             if let newline = received.firstIndex(of: 10) {
+                guard newline < maximumBytes else { throw DesktopError.invalidReply }
                 let reply = try JSONDecoder().decode(DesktopReply.self, from: received.prefix(upTo: newline))
                 guard reply.id == request.id else { throw DesktopError.invalidReply }
                 return reply

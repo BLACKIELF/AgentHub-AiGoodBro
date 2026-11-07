@@ -468,6 +468,81 @@ extension LocalProxyHostFixtures {
                 "deleting a run representative cannot substitute or default-enable a new unregistered home")
             vanished.process = nil
         }
+        if selected == nil || selected == "registration-status" {
+            let registered = profile("registration-current")
+            let pending = profile("registration-pending")
+            var missingIdentity = profile("registration-unverified")
+            missingIdentity.lastSnapshot?.accountID = nil
+            var central = profile("registration-central")
+            central.isSystemProfile = true
+            let usage = UsageStore([registered, pending, missingIdentity, central])
+            usage.isPreview = false
+            var choices = LocalProxyPreferences()
+            choices.knownIDs = [registered.id, pending.id, missingIdentity.id]
+            choices.enabledIDs = choices.knownIDs
+            try JSONEncoder().encode(choices).write(to: file, options: .atomic)
+            let store = LocalProxyQueueStore(usageStore: usage, previewPendingRegistrationIDs: [pending.id])
+            store.flushDisplayRows()
+            expect(store.displayRows.allSatisfy { !$0.requiresRunRegistration }, "stopped real store ignores preview-only pending registration")
+            store.process = child
+            store.phase = .running
+            store.runID = UUID().uuidString
+            store.controlKey = "synthetic-registration"
+            store.registeredPool = [
+                registered.id: .init(
+                    home: registered.codexHomeURL, account: registered.recordedAccountKey,
+                    accountID: registered.lastSnapshot!.accountID!)
+            ]
+            store.activeIDs = [registered.id]
+            store.accountStates[pending.id] = "temporary_error"
+            let savedPreferences = try Data(contentsOf: file)
+            let savedRun = store.runID
+            let savedProcess = child.processIdentifier
+            store.rebuildRows()
+            store.flushDisplayRows()
+            expect(
+                store.displayRows.first(where: { $0.id == pending.id }).map { $0.isEnabled && $0.requiresRunRegistration && $0.state == "temporary_error" } == true,
+                "enabled but unregistered account carries a distinct display fact without replacing its failure")
+            expect(
+                store.displayRows.first(where: { $0.id == missingIdentity.id })?.requiresRunRegistration == true,
+                "startup account without verified account ID also reports pending registration")
+            expect(
+                store.displayRows.first(where: { $0.id == registered.id })?.requiresRunRegistration == false,
+                "registered account remains free of pending registration")
+            let orderID = requestID()
+            let order = await store.handle(
+                .init(
+                    schemaVersion: 1, runID: savedRun!, key: "synthetic-registration", command: "order", requestID: orderID,
+                    profileID: registered.id, leaseID: nil))
+            expect(order.ok && order.order == [registered.id], "displaying pending registration cannot add an account to request order")
+            _ = await store.handle(
+                .init(
+                    schemaVersion: 1, runID: savedRun!, key: "synthetic-registration", command: "order_end", requestID: orderID,
+                    profileID: "", leaseID: nil))
+            try expect(
+                Data(contentsOf: file) == savedPreferences && store.activeIDs == [registered.id]
+                    && Set(store.registeredPool.keys) == [registered.id] && store.runID == savedRun
+                    && child.isRunning && child.processIdentifier == savedProcess,
+                "registration display leaves saved choices, pool, run and running helper unchanged")
+            usage.profiles[0].lastSnapshot?.accountID = "changed-registration-identity"
+            store.rebuildRows()
+            store.flushDisplayRows()
+            expect(
+                store.hasStaleRunningBinding(for: registered.id)
+                    && store.displayRows.first(where: { $0.id == registered.id })?.requiresRunRegistration == false,
+                "changed identity retains the existing stale-binding explanation")
+            store.setAccountEnabled(id: pending.id, enabled: false)
+            store.flushDisplayRows()
+            expect(
+                store.displayRows.first(where: { $0.id == pending.id }).map { !$0.isEnabled && $0.requiresRunRegistration } == true
+                    && !store.canToggleAccount(id: pending.id),
+                "opting out remains available but cannot enable an unregistered account mid-run")
+            store.process = nil
+            store.phase = .stopped
+            store.rebuildRows()
+            store.flushDisplayRows()
+            expect(store.displayRows.allSatisfy { !$0.requiresRunRegistration }, "pending registration clears when there is no running proxy")
+        }
         if selected == nil || selected == "display-order" {
             let first = profile("display-first")
             let second = profile("display-second")

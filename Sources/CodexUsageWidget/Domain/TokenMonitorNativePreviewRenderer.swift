@@ -117,20 +117,24 @@ enum TokenMonitorNativePreviewRenderer {
     }
 
     private static func renderProxyActivity(to directory: URL) throws {
-        let rows = [4, 8].map { number in
+        func rows(language: WidgetLanguage) -> [LocalProxyQueueRow] {
+            [4, 8].map { number in
             LocalProxyQueueRow(
-                id: "fixture-proxy-\(number)", label: "示例 Plus 账号", accountNumber: number,
+                id: "fixture-proxy-\(number)", label: language.text("示例 Plus 账号", "Demo Plus account"), accountNumber: number,
                 windows: [
                     .init(id: "5h", remaining: number == 4 ? 89 : 100, resetsAt: referenceDate.addingTimeInterval(17_520)),
                     .init(id: "7d", remaining: number == 4 ? 21 : 73, resetsAt: referenceDate.addingTimeInterval(360_000)),
-                ], creditBalance: .init(balance: "2240.36", unlimited: false),
+                ], creditBalance: .init(balance: number == 4 ? "2240.36" : "0", unlimited: false),
+                resetCardCount: number == 4 ? 3 : 2,
+                resetCardExpiries: number == 4
+                    ? [referenceDate.addingTimeInterval(259_200), referenceDate.addingTimeInterval(3_600), referenceDate.addingTimeInterval(86_400)]
+                    : [referenceDate.addingTimeInterval(172_800), referenceDate.addingTimeInterval(86_400)],
+                resetCardFetchedAt: referenceDate, resetCardReadSucceeded: true,
                 isEnabled: true, isPriority: false, isCurrent: true, quotaText: nil,
                 state: "current", cooldownUntil: nil, activeRequestCount: 1)
+            }
         }
         let preferences = TokenMonitorEdgeDockPreferences(enabled: true, mode: .always, items: [.proxy()])
-        let cells = TokenMonitorEdgeDockProjection.make(
-            preferences: preferences, quotaSources: [], usage: .init(response: nil), language: .zh,
-            proxyPhase: .running, proxyRows: rows)
         for scheme in [ColorScheme.dark, .light] {
             let controlSamples = VStack(alignment: .leading, spacing: 14) {
                 HStack {
@@ -153,24 +157,87 @@ enum TokenMonitorNativePreviewRenderer {
             try WorkspacePreviewRenderer.renderView(
                 controlSamples, size: CGSize(width: 610, height: 390), scheme: scheme,
                 to: directory.appendingPathComponent("settings-controls-\(scheme == .dark ? "dark" : "light").png"))
-            let view = HStack(alignment: .center, spacing: 4) {
-                TokenMonitorEdgeDockCardView(
-                    cell: cells[0], side: .right, language: .zh, tailY: 166,
-                    isPinned: true, canPin: true, onPin: {}, onOpenDashboard: {}, onRefresh: {}
-                )
-                .frame(width: 292, height: 332)
-                TokenMonitorEdgeDockRailView(
-                    cells: cells, side: .right, language: .zh, compact: false, warnColors: false,
-                    focusedIndex: 0, onSelect: { _ in }, onDrag: { _ in }, onDrop: { _ in }
-                )
-                .frame(width: 64, height: 134)
+            for locale in [WidgetLanguage.zh, .en] {
+                let cells = TokenMonitorEdgeDockProjection.make(
+                    preferences: preferences, quotaSources: [], usage: .init(response: nil), language: locale,
+                    proxyPhase: .running, proxyRows: rows(language: locale))
+                let view = HStack(alignment: .center, spacing: 4) {
+                    TokenMonitorEdgeDockCardView(
+                        cell: cells[0], side: .right, language: locale, tailY: 166,
+                        isPinned: true, canPin: true, onPin: {}, onOpenDashboard: {}, onRefresh: {}
+                    )
+                    .frame(width: 292, height: 378)
+                    TokenMonitorEdgeDockRailView(
+                        cells: cells, side: .right, language: locale, compact: false, warnColors: false,
+                        focusedIndex: 0, onSelect: { _ in }, onDrag: { _ in }, onDrop: { _ in }
+                    )
+                    .frame(width: 64, height: 134)
+                }
+                .padding(16)
+                .background(Color(nsColor: .windowBackgroundColor))
+                .environment(\.widgetLanguage, locale)
+                .environment(\.workspacePreviewDate, referenceDate)
+                let localeSuffix = locale == .zh ? "" : "-en"
+                try WorkspacePreviewRenderer.renderView(
+                    view, size: CGSize(width: 392, height: 410), scheme: scheme,
+                    to: directory.appendingPathComponent("proxy-activity\(localeSuffix)-\(scheme == .dark ? "dark" : "light").png"))
             }
-            .padding(16)
-            .background(Color(nsColor: .windowBackgroundColor))
-            .environment(\.workspacePreviewDate, referenceDate)
-            try WorkspacePreviewRenderer.renderView(
-                view, size: CGSize(width: 392, height: 364), scheme: scheme,
-                to: directory.appendingPathComponent("proxy-activity-\(scheme == .dark ? "dark" : "light").png"))
+        }
+    }
+
+    /// Synthetic projection evidence only; never loads provider accounts or caches.
+    private static func renderKimiQuotaDock(to directory: URL) throws {
+        for locale in [WidgetLanguage.zh, .en] {
+            for hasTotal in [true, false] {
+                var metrics = [
+                    TokenMonitorFloatingBubbleMetric(
+                        id: "session", name: locale.text("Code 5 小时", "Code 5-hour"),
+                        sourceID: "kimi:fixture:session", fetchedAt: referenceDate,
+                        value: .percentRemaining(100), resetLabel: "2026-11-07 18:00"),
+                    TokenMonitorFloatingBubbleMetric(
+                        id: "weekly", name: locale.text("Code 7 天", "Code 7-day"),
+                        sourceID: "kimi:fixture:weekly", fetchedAt: referenceDate,
+                        value: .percentRemaining(100), resetLabel: "2026-11-14 13:00"),
+                ]
+                if hasTotal {
+                    metrics.append(.init(
+                        id: "monthly", name: locale.text("总额度（月）", "Total quota (month)"),
+                        sourceID: "kimi:fixture:monthly", fetchedAt: referenceDate,
+                        value: .percentRemaining(50.61), resetLabel: "2026-11-24 01:39"))
+                }
+                let account = TokenMonitorFloatingBubbleAccount(
+                    providerID: "kimi", providerName: "Kimi Code", accountID: "fixture-kimi",
+                    accountName: locale.text("01 · Kimi 合成账号", "01 · Kimi demo account"), metrics: metrics)
+                let cells = TokenMonitorEdgeDockProjection.make(
+                    preferences: .init(enabled: true, mode: .always, items: [.account("kimi", account.accountID)]),
+                    quotaSources: [account], usage: .init(response: nil), language: locale, now: referenceDate)
+                guard cells.count == 1, cells[0].headlineMetricID == "monthly",
+                    hasTotal ? cells[0].percentRemaining == 50.61 : cells[0].percentRemaining == nil
+                else { throw CocoaError(.fileReadCorruptFile) }
+                for scheme in [ColorScheme.dark, .light] {
+                    let cardHeight: CGFloat = hasTotal ? 420 : 400
+                    let view = HStack(alignment: .center, spacing: 4) {
+                        TokenMonitorEdgeDockCardView(
+                            cell: cells[0], side: .right, language: locale, tailY: 166,
+                            isPinned: true, canPin: true, onPin: {}, onOpenDashboard: {}, onRefresh: {}
+                        )
+                        .frame(width: 292, height: cardHeight)
+                        TokenMonitorEdgeDockRailView(
+                            cells: cells, side: .right, language: locale, compact: false, warnColors: false,
+                            focusedIndex: 0, onSelect: { _ in }, onDrag: { _ in }, onDrop: { _ in }
+                        )
+                        .frame(width: 64, height: 134)
+                    }
+                    .padding(16)
+                    .background(Color(nsColor: .windowBackgroundColor))
+                    .environment(\.widgetLanguage, locale)
+                    .environment(\.workspacePreviewDate, referenceDate)
+                    try WorkspacePreviewRenderer.renderView(
+                        view, size: CGSize(width: 392, height: cardHeight + 32), scheme: scheme,
+                        to: directory.appendingPathComponent(
+                            "edge-quota-kimi-\(hasTotal ? "total" : "unknown")-\(locale.rawValue)-\(scheme == .dark ? "dark" : "light").png"))
+                }
+            }
         }
     }
 
@@ -240,7 +307,9 @@ enum TokenMonitorNativePreviewRenderer {
                 return true
             }
             try renderProxyActivity(to: directory)
+            try renderKimiQuotaDock(to: directory)
             try renderQuotaDock(to: directory)
+            if CommandLine.arguments.contains("--preview-quota-cards-only") { return true }
             for scheme in [ColorScheme.light, .dark] {
                 let rings = HStack(spacing: 20) {
                     ForEach([Double?.none, 0, 1, 67, 100], id: \.self) { value in

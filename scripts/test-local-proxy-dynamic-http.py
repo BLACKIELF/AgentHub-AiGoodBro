@@ -18,12 +18,13 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_EVIDENCE = ROOT / ".local-artifacts/theme-upstream-1004v1/proxy-controls-live-1008v1/dynamic-http-1008v1"
 NATIVE_INPUTS = [
     "Sources/CodexUsageWidget/Domain/LocalProxyQueue.swift",
+    "Sources/CodexUsageWidget/Domain/LocalProxySelfCheckModel.swift",
     "Sources/CodexUsageWidget/Domain/UsageModels.swift",
     "Sources/CodexUsageWidget/Domain/WorkspacePresentation.swift",
     *["Sources/CodexUsageWidget/Services/" + name for name in [
         "DispatchParticipationSync.swift", "CodexProfileStore.swift", "CodexCredentialTransaction.swift",
         "DispatchActivityStore.swift", "LocalProxyBridge.swift", "LocalProxyNetworkSettings.swift", "LocalProxyQueueStore.swift",
-        "LocalProxyLegacyCooldownRecovery.swift",
+        "LocalProxyLegacyCooldownRecovery.swift", "LocalProxyNetworkProbe.swift", "TokenMonitorHTTPTransport.swift",
     ]],
     "scripts/test-local-proxy-host.py", "scripts/LocalProxyDynamicHTTPFixture.swift",
     "scripts/check-build-target-idle.py", "scripts/test-local-proxy-dynamic-http.py",
@@ -54,7 +55,8 @@ def freeze(run):
     target = run / "frozen-source"
     files = list(NATIVE_INPUTS)
     files += [str(path.relative_to(ROOT)) for path in sorted((ROOT / "Companion/LocalProxy").glob("*.go"))]
-    files += ["Companion/LocalProxy/go.mod", "Companion/LocalProxy/go.sum"]
+    files += ["Companion/LocalProxy/go.mod", "Companion/LocalProxy/go.sum", "Companion/LocalProxy/go.py"]
+    files += [str(path.relative_to(ROOT)) for path in sorted((ROOT / "Companion/LocalProxy/upstream-patches").glob("*")) if path.is_file()]
     manifest = []
     for relative in files:
         data = (ROOT / relative).read_bytes()
@@ -63,8 +65,8 @@ def freeze(run):
         destination.write_bytes(data)
         manifest.append({"path": relative, "sha256": digest(data), "bytes": len(data)})
     module = (target / "Companion/LocalProxy/go.mod").read_text()
-    if "github.com/router-for-me/CLIProxyAPI/v8 v8.0.38" not in module:
-        raise RuntimeError("actual current Go runtime v8.0.38 is required")
+    if "github.com/router-for-me/CLIProxyAPI/v8 v8.0.58" not in module:
+        raise RuntimeError("actual current Go runtime v8.0.58 is required")
     save_json(run / "frozen-source-manifest.json", {"schemaVersion": 1, "files": manifest})
     return target, manifest
 
@@ -253,7 +255,7 @@ def main():
                PYTHONPYCACHEPREFIX=str(args.evidence.resolve() / "python-cache"),
                PYTHONDONTWRITEBYTECODE="1")
     go_binary = run / "go-protocol-fixture"
-    built = run_command(["go", "test", "-c", "-o", str(go_binary), "."],
+    built = run_command([sys.executable, "go.py", "--build-root", str(run / "go-source"), "test", "-c", "-o", str(go_binary), "."],
                         frozen / "Companion/LocalProxy", env, run / "go-build.log", 420)
     if built.returncode:
         raise RuntimeError("frozen Go fixture compilation failed; see go-build.log")
@@ -264,7 +266,7 @@ def main():
     matching = all(digest((ROOT / row["path"]).read_bytes()) == row["sha256"] for row in manifest)
     receipt = {"schemaVersion": 1, "ok": all(row["expectedOutcomeObserved"] for row in summaries),
                "cases": summaries, "sourceManifest": "frozen-source-manifest.json",
-               "sourceStillMatchesFrozenInputs": matching, "runtimeSDK": "CLIProxyAPI v8.0.38",
+               "sourceStillMatchesFrozenInputs": matching, "runtimeSDK": "CLIProxyAPI v8.0.58",
                "goBinarySHA256": digest(go_binary.read_bytes()), "realAccountsOrProviders": False,
                "networkBoundary": "127.0.0.1 only; Go dependencies offline",
                "productionFilesModifiedByFixture": False}

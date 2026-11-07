@@ -43,7 +43,7 @@ def main():
     assert compact("if let official = result.1 { try? self.profileStore.recordOfficialProfile(official, for: profile.id) } try? self.recordOfficialSnapshot(result.2, for: profile.id)") in compact(membership).replace("_=", "")
     wrapper = block(source, "    private func recordOfficialSnapshot(")
     assert compact("noticeChannels: resetNoticeChannels(expiry: false).map(\\.rawValue)") in compact(wrapper)
-    assert compact("observeOfficialQuotaChanges(snapshot, profileID: profileID, newReceipt: receipt)") in compact(wrapper)
+    assert compact("observeOfficialQuotaChanges(snapshot, profileID: profileID, newReceipt: receipt, resetCreditComparison: comparison)") in compact(wrapper)
     queue = block(source, "    private func enqueueResetNotices(")
     assert compact("let revision = resetNoticeRevision(delivery.channel, expiry: expiry),") in compact(queue)
     assert compact("&& self.resetNoticeRevision(delivery.channel, expiry: expiry) == revision") in compact(queue)
@@ -52,12 +52,15 @@ def main():
     assert "Task { @MainActor" in dispatch and "self?.enqueueResetNotices(" in dispatch
     support = r'''
 import Foundation
+import Security
 enum CodexResetNoticeChannel: String { case local, feishu, telegram, weChat, personalWeChat }
 enum Feature: Hashable { case localNotification, feishu }
 enum Detail { case none, all }
 struct Options { var includesResetCredits = true; var resetExpiryDetail = Detail.all }
 final class Channels { var weChatMessageOptions = Options(); func publicResetRevision(_ kind: CodexResetNoticeChannel) -> UUID? { nil } }
-enum FeishuWebhookError: Error { case keychainAuthorizationRequired, keychainTimedOut, keychainBusy, missingWebhook, transportFailed, invalidResponse, cancelled, httpStatus(Int), rejected }
+enum FeishuWebhookError: Error { case keychainAuthorizationRequired, keychainTimedOut, keychainBusy, keychain(OSStatus), missingWebhook, transportFailed, invalidResponse, cancelled, httpStatus(Int), rejected }
+// Retry scheduling is outside this callback/receipt fixture; never run the operation.
+final class CredentialRetry { func retry(after error: FeishuWebhookError, _ operation: @escaping () -> Void) {} }
 enum LocalError: Error { case notificationSubmissionFailed, disabled }
 enum CodexResetNoticeDeliveryPhase: String { case pending, sent, uncertain }
 enum CodexResetNoticeDeliveryReceipt: String { case accepted, notSent, rejected, uncertain
@@ -80,6 +83,8 @@ final class Harness {
  var feishuMessageOptions = Options(), messageChannels = Channels()
  var localNotificationMessage: String? = "new local", feishuNotificationMessage = "new feishu"
  var resetNoticeDeliveryStore = Ledger()
+ var feishuCredentialRetry = CredentialRetry()
+ func refreshFeishuWebhookConfiguration() { fatalError("unexpected credential I/O in isolated fixture") }
  static var ids: [String: UUID] = [:]
  static func resetNoticeUUID(_ value: String) -> UUID { if let id = ids[value] { return id }; let id = UUID(); ids[value] = id; return id }
  func localNotificationErrorMessage(_ error: LocalError) -> String { "local failure" }
@@ -166,7 +171,7 @@ print("PASS production revision/callback/completion: \(checks) behavior checks; 
         print(json.dumps({"version": "1013v1", "behaviorChecks": 19, "wiringGuards": 7, "exitCode": result.returncode,
             "inputs": {str(path.relative_to(ROOT)): hashlib.sha256(value.encode()).hexdigest() for path, value in [(SOURCE, source), (LEDGER, ledger)]},
             "inputsUnchangedDuringRun": unchanged,
-            "scope": "Actual extracted revision, credential handler, callback bodies, completion branch and receipt phase; synthetic dependencies; actor scheduling, full sender and disk ledger are not executed; membership is source wiring only",
+            "scope": "Actual extracted revision, credential handler, callback bodies, completion branch and receipt phase; synthetic dependencies; credential retry scheduling, actor scheduling, full sender and disk ledger are not executed; membership is source wiring only",
             "realAccountIO": False, "networkSends": 0, "notificationSubmissions": 0}, sort_keys=True))
         return result.returncode if unchanged else 2
 

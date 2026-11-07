@@ -19,7 +19,8 @@ final class TokenMonitorCancellation: @unchecked Sendable {
 /// Blocking supervision: call only from an existing utility queue, never MainActor.
 struct TokenMonitorEngine: Sendable {
     static let maximumInputBytes = 1_048_576
-    static let maximumOutputBytes = 16_777_216
+    // Match the bridge framing contract: a valid multi-source history can exceed 16 MiB.
+    static let maximumOutputBytes = 32 * 1024 * 1024
     static let maximumErrorBytes = 65_536
     struct Fixture: Sendable {
         let executable: URL

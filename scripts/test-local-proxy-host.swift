@@ -84,6 +84,12 @@ import Foundation
         let window = CodexQuotaWindowSnapshot(usedPercent: 1, resetsAt: now.addingTimeInterval(3600))
         let snapshot = CodexAccountSnapshot(fetchedAt: now, fiveHour: window, sevenDay: window)
         let profile = CodexProfile(id: "fixture-profile", lastSnapshot: snapshot)
+        let creditOptIn = LocalProxyAccountPolicy(allowsCredits: true)
+        expect(!LocalProxyAccountPolicy().allowsCredits && LocalProxyPreferences().creditFallback != true, "new accounts and global fallback default to subscription only")
+        let noCreditPermission = try JSONDecoder().decode(LocalProxyAccountPolicy.self, from: Data(#"{"fiveHourUsedLimit":80}"#.utf8))
+        expect(!noCreditPermission.allowsCredits && noCreditPermission.fiveHourUsedLimit == 80, "missing stored credit permission fails closed without changing quota reserve")
+        let restoredCreditOptIn = try JSONDecoder().decode(LocalProxyAccountPolicy.self, from: JSONEncoder().encode(creditOptIn))
+        expect(restoredCreditOptIn.allowsCredits, "explicit saved per-account credit opt-in survives decoding")
         let legacyPreferences = try JSONDecoder().decode(LocalProxyPreferences.self, from: Data(#"{"schemaVersion":1,"isEnabled":true,"order":["legacy"],"enabledIDs":["legacy"],"knownIDs":["legacy"],"priorityIDs":["legacy"],"creditFallback":true,"creditPrimaryFloor":2400,"creditSecondaryFloor":1800}"#.utf8))
         expect(legacyPreferences.lastIDs == nil && legacyPreferences.lastOverrides == nil
             && legacyPreferences.priorityIDs == ["legacy"] && legacyPreferences.creditFloors == (2400, 1800),
@@ -163,14 +169,16 @@ import Foundation
             ("2,100", 2000, false),
         ] {
             paid.lastSnapshot?.creditBalance = balance
-            expect((LocalProxyAdmission.quota(paid, now: now, creditFloor: floor, allowPaidCredits: true) == nil) == allowed, "credit tier boundary and malformed value")
+            expect((LocalProxyAdmission.quota(paid, now: now, creditFloor: floor, allowPaidCredits: true, policy: creditOptIn) == nil) == allowed, "credit tier boundary and malformed value")
             expect(LocalProxyAdmission.quota(paid, now: now, creditFloor: floor) != nil, "credits require explicit opt-in")
         }
         paid.lastSnapshot?.creditBalance = "2500"
+        expect(LocalProxyAdmission.quota(paid, now: now, creditFloor: 2000, allowPaidCredits: true) == .quota, "global opt-in alone never enables a default account to spend credits")
+        expect(LocalProxyAdmission.quota(paid, now: now, creditFloor: 2000, policy: creditOptIn) == .quota, "account opt-in alone never enables global credit spending")
         expect(
-            LocalProxyAdmission.quota(paid, now: now.addingTimeInterval(121), creditFloor: 2000, allowPaidCredits: true) == .quotaUnknown, "old balance never authorizes spending")
+            LocalProxyAdmission.quota(paid, now: now.addingTimeInterval(121), creditFloor: 2000, allowPaidCredits: true, policy: creditOptIn) == .quotaUnknown, "old balance never authorizes spending")
         paid.lastSnapshot?.creditBalanceUnlimited = true
-        expect(LocalProxyAdmission.quota(paid, now: now, creditFloor: 2000, allowPaidCredits: true) != nil, "unbounded balance cannot promise a retained floor")
+        expect(LocalProxyAdmission.quota(paid, now: now, creditFloor: 2000, allowPaidCredits: true, policy: creditOptIn) != nil, "unbounded balance cannot promise a retained floor")
         var poolSpent = profile
         poolSpent.lastSnapshot?.fiveHour?.usedPercent = 100
         var poolOtherSnapshot = snapshot
@@ -365,8 +373,8 @@ import Foundation
         expect(editable.setAccountPolicy(id: profile.id, policy: LocalProxyAccountPolicy()), "account can return to inherited defaults")
         paid.lastSnapshot?.creditBalanceUnlimited = false
         paid.lastSnapshot?.creditBalance = "2399"
-        expect(LocalProxyAdmission.quota(paid, now: now, creditFloor: reloaded.creditPrimaryFloor, allowPaidCredits: true) == .quota, "custom first floor enforced")
-        expect(LocalProxyAdmission.quota(paid, now: now, creditFloor: reloaded.creditSecondaryFloor, allowPaidCredits: true) == nil, "custom second floor enforced")
+        expect(LocalProxyAdmission.quota(paid, now: now, creditFloor: reloaded.creditPrimaryFloor, allowPaidCredits: true, policy: creditOptIn) == .quota, "custom first floor enforced")
+        expect(LocalProxyAdmission.quota(paid, now: now, creditFloor: reloaded.creditSecondaryFloor, allowPaidCredits: true, policy: creditOptIn) == nil, "custom second floor enforced")
         expect(reloaded.isEnabled && reloaded.rows.first?.isEnabled == false && reloaded.rows.first?.isPriority == true, "independent queue preferences persisted")
         expect(liveFixtureUsage.profiles == [profile] && !profile.isDispatchPriorityEnabled, "dispatch profile source unchanged")
         expect(reloaded.phase == .stopped && reloaded.endpoint == nil, "saved opt-in never auto-starts")
@@ -964,6 +972,7 @@ import Foundation
         // A release ACK commits the registry row off-main, while its quota
         // refresh marker is installed by the delayed MainActor cleanup.
         // Paid admission must stay fail-closed in that interval.
+        expect(lifecycle.setAccountPolicy(id: profile.id, policy: creditOptIn), "release fence fixture explicitly opts the account into credits")
         let fencedRequest = UUID().uuidString
         let fencedLease = try activity.reserveProxy(
             account: "fenced-account", alias: "fenced-alias", runID: run, requestID: fencedRequest,
@@ -1500,6 +1509,7 @@ import Foundation
         let creditRun = UUID().uuidString
         creditStore.setAccountEnabled(id: profile.id, enabled: true)
         creditStore.setCreditFallback(true)
+        expect(creditStore.setAccountPolicy(id: profile.id, policy: creditOptIn), "paid fixture explicitly opts account into credits")
         creditStore.setCreditFloors(primary: 2400, secondary: 1800)
         let creditChild = Process()
         creditChild.executableURL = URL(fileURLWithPath: "/bin/sleep")
@@ -1673,13 +1683,13 @@ import Foundation
         expect(creditStore.setAccountPolicy(id: profile.id, policy: creditOptOut), "live per-account credit opt-out saves")
         let optedOut = await fixtureHandle(creditStore, creditRequest("acquire_credit_primary", requestID: UUID().uuidString))
         expect(optedOut.error == "quota" && optedOut.accessToken == nil, "live individual credit opt-out blocks paid admission")
-        expect(creditStore.setAccountPolicy(id: profile.id, policy: LocalProxyAccountPolicy()), "restore individual policy")
+        expect(creditStore.setAccountPolicy(id: profile.id, policy: creditOptIn), "restore individual policy")
         let firstCreditRequest = UUID().uuidString
         let firstCredit = await fixtureHandle(creditStore, creditRequest("acquire_credit_primary", requestID: firstCreditRequest))
         expect(firstCredit.ok && firstCredit.leaseID != nil, "host admits balance above configured primary floor")
         expect(creditStore.setAccountPolicy(id: profile.id, policy: LocalProxyAccountPolicy(allowsCredits: false)), "rules remain editable with an admitted request")
         expect(firstCredit.leaseID.map { creditStore.leases[$0]?.isAdmitted == true } == true, "editing rules preserves an already admitted request")
-        expect(creditStore.setAccountPolicy(id: profile.id, policy: LocalProxyAccountPolicy()), "restore active fixture policy")
+        expect(creditStore.setAccountPolicy(id: profile.id, policy: creditOptIn), "restore active fixture policy")
         let firstRelease = await fixtureHandle(creditStore, creditRequest("release", requestID: firstCreditRequest, leaseID: firstCredit.leaseID))
         expect(firstRelease.ok && creditUsage.refreshCount > 0, "paid completion requests official balance refresh")
         let staleCredit = await fixtureHandle(creditStore, creditRequest("acquire_credit_primary", requestID: UUID().uuidString))
@@ -1969,6 +1979,7 @@ extension LocalProxyHostFixtures {
         let usage = UsageStore([target, peer, system]); usage.isPreview = false
         let store = LocalProxyQueueStore(usageStore: usage)
         store.setCreditFallback(true); store.setCreditFloors(primary: 2400, secondary: 1800)
+        expect(store.setAccountPolicy(id: target.id, policy: LocalProxyAccountPolicy(allowsCredits: true)), "release fence fixture explicitly opts target into credits")
         let child = Process(); child.executableURL = URL(fileURLWithPath: "/bin/sleep"); child.arguments = ["60"]
         try child.run()
         defer { if child.isRunning { child.terminate() }; localProxyReleaseFence.clear(runID: store.runID ?? "") }
