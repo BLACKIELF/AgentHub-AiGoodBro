@@ -1,11 +1,12 @@
 {
   "messages" : [
     {
-      "body" : "aigoodbro微信号同名",
-      "expiresAt" : "2026-10-28T11:27:44Z",
-      "id" : "notice-5e445836-7781-4f01-8cdb-8ed018581c6f",
-      "publishedAt" : "2026-09-28T11:27:44Z",
-      "title" : "aigoodbro微信号同名"
+      "body" : "今天（11月7日）GPT 可能有风控检查。\n\n请大家注意使用安全：不要反代，不要破甲，不要使用一些乱七八糟的东西。\n\naigoodbro.com",
+      "expiresAt" : "2026-12-07T07:35:54Z",
+      "id" : "notice-57c98384-9762-46c8-ac42-8540f16e36a3",
+      "publishedAt" : "2026-11-07T07:35:54Z",
+      "title" : "11月7日 GPT 使用安全提醒",
+      "url" : "https://aigoodbro.com"
     }
   ],
   "version" : 1
