@@ -282,6 +282,16 @@ class AsarPackageTests(unittest.TestCase):
             "src/shared/usage/sessionUsageArchiveStore.js",
             # Approved v0.71 #1052 archive handoff/failure guard and #1037 popover fix.
             "src/shared/usage/usageTransform.js", "src/electron/trayModeSettings.js",
+            # Reviewed 1107v1 refresh, archive, quota, transport and status backports.
+            "src/electron/deviceRuntimeCoordinator.js",
+            "src/electron/serviceStatus.js",
+            "src/shared/archiveHelpers.js",
+            "src/shared/outboundFetch.js",
+            "src/shared/providers/claude/limits.js",
+            "src/shared/providers/kiro/limits.js",
+            "src/shared/usage.js",
+            "src/shared/usage/clientUsageArchive.js",
+            "src/shared/usage/sessionUsageArchive.js",
         })
         # Approved Grok fix: writer prompts must not become session titles.
         grok_metadata = PACKAGE.asar_content(packaged, tree, start, "src/shared/providers/grok/sessionMetadata.js").decode()
