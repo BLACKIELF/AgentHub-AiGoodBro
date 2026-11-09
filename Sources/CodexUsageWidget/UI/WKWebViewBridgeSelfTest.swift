@@ -733,9 +733,9 @@ enum WKWebViewBridgeSelfTest {
                 await controller.refreshHomeUsage()
                 homeReadDone = true
             }
-            guard waitFor({ homeReadDone }), controller.homeUsage.phase == .unavailable,
+            guard waitFor({ homeReadDone }), controller.homeUsage.phase == .pending,
                 controller.homeUsage.dashboardJSON == homeJSON
-            else { throw TotalsFixtureFailure.failed("pending cannot conceal a previous failure") }
+            else { throw TotalsFixtureFailure.failed("valid same-scope pending retry preserves previous charts") }
             try writeResponse(["ready": true, "homeUsage": ["revision": homeRevision, "unchanged": true]])
             homeReadDone = false
             Task {
