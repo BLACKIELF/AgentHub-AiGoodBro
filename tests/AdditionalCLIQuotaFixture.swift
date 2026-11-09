@@ -142,6 +142,7 @@ private func testGeminiValid() async throws {
     try expect(result.maskedIdentity == "ac***-1", "Gemini subject masking")
     try expect(result.identityFingerprint?.count == 64, "Gemini stable identity fingerprint")
     try expect(result.windows.count == 2, "Gemini model grouping")
+    try expect(result.windows.allSatisfy { $0.scope == .model && $0.modelID == $0.label }, "Gemini preserves exact quota model IDs without client aliases")
     let pro = result.windows.first { $0.label == "gemini-2.5-pro" }
     try expect(pro?.usedPercent == 75, "Gemini lowest remaining bucket")
     try expect(pro?.resetsAt != nil, "Gemini reset parsing")

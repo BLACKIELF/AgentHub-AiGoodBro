@@ -5,6 +5,7 @@ external cancel (happy/wrong-owner/stale-PID/idempotent), late output after
 cancel, failure preserving results, concurrent duplicate reservation refusal,
 and the rule that status/result never impersonate success.
 """
+import base64
 import importlib.util
 import json
 import multiprocessing
@@ -256,6 +257,36 @@ class AgentCliTests(unittest.TestCase):
         self.assertEqual(result["observableState"], "result-ready")
         self.assertIn("not accepted", result["acceptanceNote"])
 
+    def test_workbuddy_brief_uses_anonymous_stdin_not_process_arguments(self):
+        brief = self.work / "brief.md"
+        expected = "fixture-private-brief 引号 ' \"\n第二行\n".encode("utf-8")
+        brief.write_bytes(expected)
+        output = self.work / "stdin-output.json"
+        fake = make_fake(self.work, "fake-stdin.py", f"""\
+            #!{sys.executable}
+            import base64, json, os, subprocess, sys
+            data = sys.stdin.buffer.read()
+            process_args = subprocess.check_output(
+                ["/bin/ps", "-ww", "-p", str(os.getpid()), "-o", "args="], text=True)
+            print(json.dumps({{"input": base64.b64encode(data).decode(),
+                              "argv": sys.argv[1:], "processArgs": process_args,
+                              "stdinLinks": os.fstat(0).st_nlink}}))
+            """)
+        done = run_cli(["--state-dir", str(self.state), "run", "--product", "workbuddy",
+                        "--owner", "owner-stdin", "--task-id", "task-stdin",
+                        "--brief-file", str(brief), "--output", str(output),
+                        "--cwd", str(self.work), "--executable", str(fake),
+                        "--timeout-seconds", "30", "--allow-run"],
+                       env_extra=self.BOTH_SWITCHES)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        observed = json.loads(output.read_text())
+        self.assertEqual(base64.b64decode(observed["input"]), expected)
+        self.assertEqual(observed["argv"], ["--model", "deepseek-v4.1-flash", "--input-format", "text", "-p"])
+        self.assertNotIn("fixture-private-brief", observed["processArgs"])
+        self.assertEqual(observed["stdinLinks"], 0, "stdin has no named filesystem entry")
+        self.assertNotIn("fixture-private-brief", self.registry.path.read_text())
+        self.assertNotIn("fixture-private-brief", support.invocation.receipt_path(output).read_text())
+
     def test_run_timeout_kills_and_marks_not_success(self):
         brief = self.work / "brief.md"
         brief.write_text("x", encoding="utf-8")
@@ -505,6 +536,36 @@ class AgentCliTests(unittest.TestCase):
         self.assertEqual(row["observableState"], "failed")
         self.assertFalse(row["occupied"])
 
+    def test_status_corrupt_registry_has_only_redacted_errors(self):
+        lease = self.registry.reserve(
+            account_key=activity.digest("shape-account"), alias_key=activity.digest("shape"),
+            code="C", project=activity.digest(str(self.work / "shape")),
+            owner="owner-shape", task="task-shape", route="direct")
+        original = self.registry.read()
+        for field in ("leaseId", "ownerThreadId", "taskId", "state", "state_list", "code_list"):
+            with self.subTest(field=field):
+                row = dict(lease)
+                if field.endswith("_list"):
+                    row[field.removesuffix("_list")] = []
+                else:
+                    row.pop(field)
+                self.registry.path.write_text(json.dumps({"schemaVersion": 1, "leases": [row]}))
+                self.registry.path.chmod(0o600)
+                before = self.registry.path.read_bytes()
+                done = run_cli(["--state-dir", str(self.state), "status", "--lease-id", lease["leaseId"]])
+                self.assertEqual(done.returncode, 1)
+                self.assertEqual(done.stdout, "")
+                self.assertNotIn("Traceback", done.stderr)
+                self.assertNotIn(str(self.root), done.stderr)
+                self.assertTrue(done.stderr.startswith("ACTIVITY_ERROR: "))
+                if field.endswith("_list"):
+                    self.assertEqual(done.stderr, "ACTIVITY_ERROR: operation_failed_no_private_details\n")
+                self.assertEqual(self.registry.path.read_bytes(), before, "status never repairs registry state")
+        self.registry.path.write_text(json.dumps(original))
+        done = run_cli(["--state-dir", str(self.state), "status", "--lease-id", lease["leaseId"]])
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads(done.stdout)["leases"][0]["leaseId"], lease["leaseId"])
+
     # -- review hardening regressions (TASK-WB-ADAPTER-REVIEW-0911v1) --------
     BOTH_SWITCHES = {"AGENT_CLI_ALLOW_RUN": "1", "AGENT_CLI_ALLOW_TEST_EXECUTABLE": "1"}
 
@@ -676,7 +737,7 @@ class AgentCliTests(unittest.TestCase):
                 "--brief-file", str(brief), "--output", str(output), "--cwd", str(self.work),
                 "--executable", str(fake), "--model", model, "--allow-run"], env_extra=self.BOTH_SWITCHES)
             self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertEqual(output.read_text().splitlines()[:3], ["--model", model, "-p"])
+            self.assertEqual(output.read_text().splitlines(), ["--model", model, "--input-format", "text", "-p"])
             payload = json.loads(done.stdout)
             self.assertEqual(payload["requestedModel"], model)
             self.assertIsNone(payload["observedModel"])

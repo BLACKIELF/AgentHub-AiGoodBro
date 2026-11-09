@@ -26,6 +26,7 @@ final class UsageStore: ObservableObject {
         let sources: [TokenMonitorSource]
     }
     private var engineScanKey: StatisticsEngineScanKey?
+    private var engineLastGoodScanKey: StatisticsEngineScanKey?
     private var engineLocalSources: [TokenMonitorSource] = []
     private var statisticsIncludesManagedCodex = true
     @Published private(set) var engineLimitsByProfileID: [String: TokenMonitorResponse] = [:]
@@ -91,17 +92,24 @@ final class UsageStore: ObservableObject {
         statisticsEngineChoice = choice
         // Previous-mode values must not be aggregated with the newly selected authority.
         engineState = TokenMonitorEngineState()
+        engineLastGoodScanKey = nil
         engineLimitsByProfileID = [:]
         refreshStatisticsEngine()
         refresh(queueIfBusy: true)
     }
 
-    private func cancelStatisticsEngine() {
+    private func cancelStatisticsEngine(for key: StatisticsEngineScanKey? = nil) {
         engineGeneration.invalidate()
         engineCancellation?.cancel()
         engineCancellation = nil
         engineScanKey = nil
-        engineState.phase = .stopped
+        // A failed refresh may reuse history only from the same scan inputs.
+        if engineLastGoodScanKey != (key ?? currentStatisticsEngineScanKey()) {
+            engineLastGoodScanKey = nil
+            engineState = TokenMonitorEngineState(phase: .stopped)
+        } else {
+            engineState.phase = .stopped
+        }
     }
 
     private func currentStatisticsEngineScanKey() -> StatisticsEngineScanKey {
@@ -126,7 +134,7 @@ final class UsageStore: ObservableObject {
         {
             return
         }
-        cancelStatisticsEngine()
+        cancelStatisticsEngine(for: key)
         statisticsEngineChoice = key.choice
         guard key.choice == .upstream else {
             engineState = TokenMonitorEngineState(phase: key.choice == .custom ? .custom : .legacy)
@@ -166,6 +174,7 @@ final class UsageStore: ObservableObject {
                 self.engineScanKey = nil
                 switch result {
                 case .success(let prepared):
+                    self.engineLastGoodScanKey = key
                     self.engineState = prepared
                     if let response = prepared.lastGood {
                         self.updateTokenMonitorHubAfterLocalCollection(response)
@@ -356,7 +365,9 @@ final class UsageStore: ObservableObject {
     }
     @Published private(set) var taskFocusRequest: TaskFocusRequest?
     @Published private(set) var isTaskOverviewVisible = false
-    @Published private(set) var profiles: [CodexProfile]
+    @Published private(set) var profiles: [CodexProfile] {
+        didSet { scheduleResetCreditAutoReconciliation() }
+    }
     @Published private(set) var officialAccountsLifetimeTokens: Int64?
     @Published private(set) var localAllAgentsLifetimeTokens: Int64?
     @Published private(set) var selectedMonitorProfileID: String
@@ -432,6 +443,8 @@ final class UsageStore: ObservableObject {
     private var resetCreditAutoIdentityRetryAt: Date?
     private var resetCreditAutoTimer: Timer?
     private var resetCreditAutoPreferences = CodexResetCreditAutoPreferences()
+    private var saveResetCreditAutoPreferences: ((CodexResetCreditAutoPreferences) -> Bool)?
+    private var resetCreditAutoReconciliationScheduled = false
     private var resetCreditAutoTask: Task<Void, Never>?
     private var resetCreditAutoAdmission: CodexResetCreditAutoAdmission?
     private var resetCreditAutoIdentity: (profileID: String, accountID: String, home: URL)?
@@ -440,18 +453,54 @@ final class UsageStore: ObservableObject {
     @MainActor private lazy var resetCreditAutoController = CodexResetCreditController()
     @Published private(set) var resetCreditAutoStatus: String?
 
-    func configureResetCreditAuto(_ preferences: CodexResetCreditAutoPreferences) {
+    func configureResetCreditAuto(
+        _ preferences: CodexResetCreditAutoPreferences,
+        save: ((CodexResetCreditAutoPreferences) -> Bool)? = nil
+    ) {
         guard !isPreview else { return }
+        if let save { saveResetCreditAutoPreferences = save }
         resetCreditAutoAdmission?.cancel()
-        resetCreditAutoPreferences = preferences.isValid ? preferences : .init()
+        resetCreditAutoPreferences = preferences.isValid ? preferences : .failClosed
         resetCreditAutoTimer?.invalidate()
         resetCreditAutoTimer = nil
+        scheduleResetCreditAutoReconciliation()
         guard hasStarted, preferences.isValid, !preferences.authorizedAccounts.isEmpty else { return }
         let timer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in self?.checkResetCreditAuto() }
         timer.tolerance = 3
         RunLoop.main.add(timer, forMode: .common)
         resetCreditAutoTimer = timer
         checkResetCreditAuto()
+    }
+
+    private func scheduleResetCreditAutoReconciliation() {
+        guard !isPreview, saveResetCreditAutoPreferences != nil, !resetCreditAutoReconciliationScheduled else { return }
+        resetCreditAutoReconciliationScheduled = true
+        // @Published emits before its setter finishes. Defer the persistence
+        // callback so a nested publication cannot overwrite the saved decision.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.resetCreditAutoReconciliationScheduled = false
+            self.reconcileResetCreditAutoPreferences()
+        }
+    }
+
+    private func reconcileResetCreditAutoPreferences() {
+        guard !isPreview, profileStore.hasReliableProfileList, profiles == profileStore.profiles,
+            let saveResetCreditAutoPreferences
+        else { return }
+        var next = resetCreditAutoPreferences
+        var identities: [String: String] = [:]
+        for profile in profiles {
+            guard let snapshot = profile.lastSnapshot, snapshot.accountType?.lowercased() == "chatgpt",
+                snapshot.quotaReadSucceeded == true, profile.lastQuotaReadFailureAt == nil,
+                let accountID = snapshot.accountID, !accountID.isEmpty
+            else { continue }
+            identities[profile.id] = accountID
+        }
+        next.reconcile(profileIDs: Set(profiles.map(\.id)), verifiedAccountIDs: identities)
+        // Saving publishes back through AppSettings and reconfigures with the
+        // saved value. Do not grant locally or restart the timer a second time.
+        if next != resetCreditAutoPreferences { _ = saveResetCreditAutoPreferences(next) }
     }
 
     private func checkResetCreditAuto() {
@@ -473,7 +522,9 @@ final class UsageStore: ObservableObject {
                 resetCreditAutoPreferences.permits(profileID: profile.id, accountID: account),
                 profile.lastSnapshot?.quotaReadSucceeded == true, profile.lastQuotaReadFailureAt == nil
             else { return false }
-            return (profile.lastSnapshot?.resetCreditExpiries ?? []).contains { $0 > now && $0.timeIntervalSince(now) <= resetCreditAutoPreferences.leadSeconds }
+            return (profile.lastSnapshot?.resetCreditExpiries ?? []).contains {
+                resetCreditAutoPreferences.isWithinExpiryWindow($0, now: now)
+            }
         }
         guard !candidates.isEmpty else { return }
         resetCreditAutoTask = Task { @MainActor [weak self] in
@@ -661,7 +712,7 @@ final class UsageStore: ObservableObject {
     private var codexHistoryConfirmationTimeout: DispatchWorkItem?
     private var hasStarted = false
     private var pendingLaunchProfileID: String?
-    private var isMainWindowActive = false
+    @Published private(set) var isMainWindowActive = false
     private var lastFullRefreshCompletedAt: Date?
     private var fullRefreshCancellation: TokenMonitorCancellation?
     private var identityRefreshCancellation: TokenMonitorCancellation?
@@ -676,6 +727,8 @@ final class UsageStore: ObservableObject {
     private let feishuWebhookService = FeishuWebhookService()
     let messageChannels = MessageChannelsController()
     private var feishuConfigurationRevision = 0
+    private var feishuCredentialReadID: UUID?
+    private let feishuCredentialRetry = MessageCredentialRetry()
     private var feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
     private let automationAuditStore = AccountAutomationAuditStore()
     private let terminalLauncher = TerminalAppLauncher()
@@ -1263,7 +1316,9 @@ final class UsageStore: ObservableObject {
                     break
                 }
                 do {
-                    try self.recordOfficialSnapshot(verifiedSnapshot, for: profile.id, allowAccountOnly: true)
+                    try self.recordOfficialSnapshot(
+                        verifiedSnapshot, for: profile.id, allowAccountOnly: true,
+                        requestDispatchRegistration: true)
                     if let officialProfile {
                         try self.profileStore.recordOfficialProfile(officialProfile, for: profile.id)
                     }
@@ -1271,6 +1326,7 @@ final class UsageStore: ObservableObject {
                         try self.profileStore.setRemark("", for: replacingSystemProfileID)
                     }
                     try self.profileStore.selectMonitor(profile.id)
+                    self.registerPendingDispatchProfile(after: verifiedSnapshot, profileID: profile.id)
                     self.syncProfiles()
                     self.configureAuthMonitoring()
                     self.isLoggingIn = false
@@ -1281,6 +1337,13 @@ final class UsageStore: ObservableObject {
                             && self.profiles.first(where: { $0.id == profile.id })?.lastQuotaReadFailureAt == nil
                         ? .completed : .quotaPending
                     self.accountManagerMessage = WidgetLanguage.storedOrAutomatic().text("已添加 \(AccountDisplay.masked(email))", "Added \(AccountDisplay.masked(email)).")
+                    if self.profiles.first(where: { $0.id == profile.id })?.dispatchRegistrationPending == true {
+                        let notice = WidgetLanguage.storedOrAutomatic().text(
+                            "账号已保存，调度登记尚未完成；下次额度验证成功后会自动重试。",
+                            "The account is saved. Pool registration is pending and will retry after the next verified quota refresh.")
+                        self.accountManagerMessage = notice
+                        self.deviceLogin?.notice = notice
+                    }
                     self.clearDisplayedAccount()
                     self.refresh(queueIfBusy: true)
                 } catch {
@@ -1359,17 +1422,11 @@ final class UsageStore: ObservableObject {
     }
 
     func availableResetCredits(for profile: CodexProfile) -> Int? {
-        if profile.id == selectedMonitorProfileID {
-            return snapshot.credits?.resetCredits
-        }
-        return profile.lastSnapshot?.availableResetCredits
+        profile.lastSnapshot?.availableResetCredits
     }
 
     func resetCreditExpiries(for profile: CodexProfile) -> [Date] {
-        if profile.id == selectedMonitorProfileID {
-            return snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt).sorted() ?? []
-        }
-        return profile.lastSnapshot?.resetCreditExpiries ?? []
+        profile.lastSnapshot?.resetCreditExpiries?.sorted() ?? []
     }
 
     func adjustResetCount(for profile: CodexProfile, delta: Int) {
@@ -2737,9 +2794,12 @@ final class UsageStore: ObservableObject {
 
     /// A user action in the embedded upstream UI enters the same guarded
     /// transaction as the native workspace. The helper never writes system auth.
-    func requestTokenMonitorDesktopSwitch(accountKey: String) async -> String? {
+    func requestTokenMonitorDesktopSwitch(accountKey: String, vendorAccountID: String) async -> String? {
+        // Only host-owned row IDs encode a profile ID. Older vendor IDs are
+        // opaque correlation aliases, not workspace or credential identities.
         guard !isLaunchingCodex, !isLoggingIn, !isAccountSwitchTransactionActive,
             let profile = TokenMonitorHostIdentity.uniqueProfile(for: accountKey, profiles: profiles),
+            !vendorAccountID.hasPrefix("aigoodbro-") || vendorAccountID == "aigoodbro-" + profile.id,
             let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: profile.codexHomeURL),
             profile.matchesRecordedCredential(identity),
             TokenMonitorHostIdentity.accountKey(email: identity.email, accountID: identity.accountID) == accountKey
@@ -4325,6 +4385,8 @@ final class UsageStore: ObservableObject {
         feishuConfigurationRevision += 1
         feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
         feishuNotificationsEnabled = enabled
+        feishuCredentialReadID = nil
+        feishuCredentialRetry.cancel()
         if !enabled {
             feishuWebhookService.invalidateCredentialCache()
             feishuWebhookConfigured = false
@@ -4422,16 +4484,24 @@ final class UsageStore: ObservableObject {
     }
 
     private func refreshFeishuWebhookConfiguration() {
-        guard !isPreview, !isUpdatingFeishuConnection else { return }
-        feishuConfigurationRevision += 1
-        feishuTaskCompletionObserver = FeishuTaskCompletionObserver()
-        let revision = feishuConfigurationRevision
+        guard !isPreview, !isUpdatingFeishuConnection, !feishuWebhookConfigured, feishuCredentialReadID == nil else { return }
+        feishuCredentialRetry.cancel(resetDelay: false)
+        let readID = UUID()
+        feishuCredentialReadID = readID
         feishuWebhookService.hasStoredWebhook { [weak self] result in
-            guard let self, self.feishuConfigurationRevision == revision else { return }
+            // Content preferences invalidate delivery, not this independent read.
+            guard let self, self.feishuCredentialReadID == readID else { return }
+            self.feishuCredentialReadID = nil
             switch result {
             case .success(let configured):
+                self.feishuCredentialRetry.cancel()
                 self.feishuWebhookConfigured = configured
                 self.feishuNeedsAuthorization = false
+                if configured {
+                    Task { @MainActor [weak self] in self?.queuePendingManualResetNotices() }
+                    self.feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                        "已恢复飞书本机连接；消息投递以发送结果为准。", "Saved Feishu connection restored; delivery is verified by send results.")
+                }
             case .failure(let error):
                 self.feishuWebhookConfigured = false
                 self.handleFeishuCredentialFailure(error)
@@ -4472,6 +4542,8 @@ final class UsageStore: ObservableObject {
     }
 
     private func beginFeishuConnectionUpdate() {
+        feishuCredentialReadID = nil
+        feishuCredentialRetry.cancel()
         isUpdatingFeishuConnection = true
         feishuConfigurationRevision += 1
         feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
@@ -4510,20 +4582,40 @@ final class UsageStore: ObservableObject {
         // for an already confirmed connection must not require setup again.
         store.feishuWebhookConfigured = true
         store.handleFeishuCredentialFailure(.transportFailed)
-        return store.feishuWebhookConfigured
+        guard store.feishuWebhookConfigured else { return false }
+        for error in [FeishuWebhookError.keychainBusy, .keychainTimedOut] {
+            store.feishuWebhookConfigured = true
+            store.feishuNeedsAuthorization = true
+            store.handleFeishuCredentialFailure(error)
+            guard !store.feishuWebhookConfigured, !store.feishuNeedsAuthorization else { return false }
+        }
+        store.handleFeishuCredentialFailure(.keychainAuthorizationRequired)
+        return store.feishuNeedsAuthorization
     }
 
     private func handleFeishuCredentialFailure(_ error: FeishuWebhookError) {
         feishuNotificationMessage = error.localizedDescription
         switch error {
-        case .keychainAuthorizationRequired, .keychainTimedOut, .keychainBusy:
+        case .keychainAuthorizationRequired:
             feishuWebhookConfigured = false
             feishuNeedsAuthorization = true
+        case .keychainTimedOut, .keychainBusy:
+            feishuWebhookConfigured = false
+            feishuNeedsAuthorization = false
+        case .keychain(let status) where status == errSecNotAvailable:
+            feishuWebhookConfigured = false
+            feishuNeedsAuthorization = false
         case .missingWebhook:
             feishuWebhookConfigured = false
             feishuNeedsAuthorization = false
         default:
             break
+        }
+        if hasStarted, !isPreview, feishuNotificationsEnabled, !feishuWebhookConfigured, !isUpdatingFeishuConnection {
+            feishuCredentialRetry.retry(after: error) { [weak self] in
+                guard let self, self.hasStarted, self.feishuNotificationsEnabled else { return }
+                self.refreshFeishuWebhookConfiguration()
+            }
         }
     }
 
@@ -4550,18 +4642,27 @@ final class UsageStore: ObservableObject {
 
     func sendFeishuTestNotification() {
         guard feishuWebhookConfigured,
-            let source = selectedMonitorProfile.flatMap(maskedAccount(for:))
+            let profile = selectedMonitorProfile,
+            let source = maskedAccount(for: profile)
         else {
             feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text("请先保存有效的飞书 Webhook", "Save a valid Feishu webhook first.")
             return
         }
-        let quota = AutomaticSwitchQuotaState(snapshot: snapshot)
+        let identity = profile.lastSnapshot.flatMap { saved -> CodexCredentialIdentity? in
+            guard let email = saved.email, !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                let accountID = saved.accountID, !accountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return nil }
+            return CodexCredentialIdentity(email: email, accountID: accountID)
+        }
+        let factsSnapshot = CodexSwitchSnapshotProjection.snapshot(
+            saved: identity == nil ? nil : profile.lastSnapshot, identity: identity)
+        let quota = AutomaticSwitchQuotaState(snapshot: factsSnapshot)
         sendFeishuNotification(
             event: .test,
             source: source,
             target: nil,
             quota: quota,
-            factsSnapshot: snapshot,
+            factsSnapshot: factsSnapshot,
             eventID: UUID(),
             isTest: true
         )
@@ -4838,6 +4939,7 @@ final class UsageStore: ObservableObject {
         quota: AutomaticSwitchQuotaState,
         factsSnapshot: UsageSnapshot? = nil,
         resetCreditComparison: CodexResetCreditComparison? = nil,
+        suppressFeishuResetCreditComparison: Bool = false,
         eventID: UUID,
         switchOrigin: FeishuSwitchNotification.SwitchOrigin = .manual,
         isTest: Bool = false
@@ -4879,6 +4981,7 @@ final class UsageStore: ObservableObject {
                         sevenDayRemaining: quota.sevenDayRemaining
                     ),
                 resetCreditComparison: resetCreditComparison,
+                suppressResetCreditComparison: suppressFeishuResetCreditComparison,
                 messageOptions: feishuMessageOptions,
                 occurredAt: observedAt,
                 eventID: eventID
@@ -4956,7 +5059,7 @@ final class UsageStore: ObservableObject {
             fiveHourResetsAt: factsSnapshot?.fiveHourQuota?.resetsAt,
             sevenDayResetsAt: factsSnapshot?.sevenDayQuota?.resetsAt,
             availableResetCredits: factsSnapshot?.credits?.resetCredits,
-            resetCreditExpiries: factsSnapshot?.credits?.resetCreditDetails?.compactMap(\.expiresAt) ?? [])
+            resetCreditExpiries: factsSnapshot?.credits?.resetCreditExpiries ?? [])
         let noticeOrigin: MessageNoticeContext.SwitchOrigin
         switch switchOrigin {
         case .manual: noticeOrigin = .manual
@@ -5075,15 +5178,20 @@ final class UsageStore: ObservableObject {
     @discardableResult
     private func recordOfficialSnapshot(
         _ snapshot: UsageSnapshot, for profileID: String,
-        allowAccountOnly: Bool = false, allowSystemAccountChange: Bool = false
+        allowAccountOnly: Bool = false, allowSystemAccountChange: Bool = false,
+        requestDispatchRegistration: Bool = false
     ) throws -> CodexResetCreditReceipt? {
         do {
             let previousProfiles = profileStore.profiles
             let receipt = try profileStore.record(
                 snapshot, for: profileID, allowAccountOnly: allowAccountOnly,
                 allowSystemAccountChange: allowSystemAccountChange,
-                noticeChannels: resetNoticeChannels(expiry: false).map(\.rawValue))
+                noticeChannels: resetNoticeChannels(expiry: false).map(\.rawValue),
+                requestDispatchRegistration: requestDispatchRegistration)
             let saved = profileStore.profiles.first(where: { $0.id == profileID })?.lastSnapshot
+            if !requestDispatchRegistration {
+                registerPendingDispatchProfile(after: snapshot, profileID: profileID)
+            }
             let comparison = saved.flatMap {
                 $0.fetchedAt == snapshot.refreshedAt
                     ? CodexResetCreditReceipt.comparison(previousProfiles: previousProfiles, current: $0) : nil
@@ -5102,6 +5210,24 @@ final class UsageStore: ObservableObject {
                 }
             }
             throw error
+        }
+    }
+
+    private func registerPendingDispatchProfile(after snapshot: UsageSnapshot, profileID: String) {
+        guard !isPreview, snapshot.quotaReadSucceeded,
+            profileStore.profiles.first(where: { $0.id == profileID })?.lastSnapshot?.fetchedAt == snapshot.refreshedAt
+        else { return }
+        do {
+            if try profileStore.registerPendingDispatchProfile(for: profileID) {
+                DispatchCodeCatalog.reload()
+            }
+        } catch {
+            // Registration is separately retryable. A failure must not discard
+            // a successfully verified account or quota snapshot. The add flow
+            // invokes this only after its other throwing save steps complete.
+            accountManagerMessage = WidgetLanguage.storedOrAutomatic().text(
+                "账号已保存，调度登记尚未完成；下次额度验证成功后会自动重试。",
+                "The account is saved. Pool registration is pending and will retry after the next verified quota refresh.")
         }
     }
 
@@ -5154,10 +5280,13 @@ final class UsageStore: ObservableObject {
                     let channels = resetNoticeChannels(expiry: false).filter {
                         intended == nil || intended!.contains($0)
                     }
+                    let duplicateManual = try resetNoticeDeliveryStore.hasSingleManualReset(
+                        accountHash: noticeObservation.accountHash, previous: receipt.previousAvailable, available: receipt.available,
+                        after: receipt.previousObservedAt, through: receipt.observedAt)
                     let deliveries = try resetNoticeDeliveryStore.enqueueChange(
                         accountHash: noticeObservation.accountHash, previous: receipt.previousAvailable,
                         available: receipt.available, previousObservedAt: receipt.previousObservedAt,
-                        observedAt: receipt.observedAt, channels: channels,
+                        observedAt: receipt.observedAt, channels: duplicateManual ? channels.filter { $0 != .feishu } : channels,
                         createIfMissing: intended != nil)
                     resetNoticeUnsavedChanges.removeValue(forKey: noticeObservation.accountHash)
                     queueResetNotices(deliveries, source: source, snapshot: current)
@@ -5168,6 +5297,7 @@ final class UsageStore: ObservableObject {
                 "重置卡提醒记录暂不可用，已保留原记录并暂停本次推送。",
                 "Reset-card notice records are unavailable. Existing records are retained; this send is paused.")
         }
+        Task { @MainActor [weak self] in self?.queuePendingManualResetNotices() }
         scheduleResetNoticeTimer()
         guard verified, let source = maskedAccount(for: profile) else { return }
         let observation = CodexQuotaEventTracker.Observation(
@@ -5198,8 +5328,124 @@ final class UsageStore: ObservableObject {
             sendFeishuNotification(
                 event: .quotaChange(change), source: source, target: nil,
                 quota: AutomaticSwitchQuotaState(snapshot: current), factsSnapshot: current,
-                resetCreditComparison: resetCreditComparison, eventID: UUID()
+                resetCreditComparison: resetCreditComparison,
+                suppressFeishuResetCreditComparison: resetCreditComparison.map { comparison in
+                    (try? resetNoticeDeliveryStore.hasSingleManualReset(
+                        accountHash: noticeObservation.accountHash, previous: comparison.previousAvailable, available: comparison.available,
+                        after: comparison.previousObservedAt, through: comparison.observedAt)) == true
+                } ?? false,
+                eventID: UUID()
             )
+        }
+    }
+
+    /// Called only by the explicit manual-control success receipt. Balance
+    /// observations never call this method or establish a manual operation.
+    @MainActor
+    func recordManualResetConfirmed(_ receipt: CodexResetCreditController.ManualResetConfirmation) {
+        guard hasStarted, !isPreview, receipt.eventID.hasPrefix("manual-reset-") else { return }
+        let manual = CodexManualResetNotice(
+            eventHash: String(receipt.eventID.dropFirst("manual-reset-".count)),
+            profileHash: CodexResetNoticeKey.hash(receipt.profileID), confirmedAt: receipt.confirmedAt)
+        let candidate = CodexResetNoticeCandidate(accountHash: receipt.accountKey, observedAt: receipt.confirmedAt, content: .manualReset(manual))
+        guard manualResetSource(for: candidate) != nil else { return }
+        do {
+            _ = try resetNoticeDeliveryStore.enqueueManualReset(
+                accountHash: receipt.accountKey, manual: manual,
+                notifyFeishu: resetNoticeChannels(expiry: false).contains(.feishu))
+            queuePendingManualResetNotices()
+        } catch {
+            feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                "手动使用已成功；通知记录暂不可用，本次未推送。", "Manual use succeeded; notice records are unavailable, so no notice was sent.")
+        }
+    }
+
+    private func manualResetSource(for candidate: CodexResetNoticeCandidate) -> FeishuMaskedAccount? {
+        guard candidate.isValid, candidate.observedAt <= Date(), case .manualReset(let manual) = candidate.content else { return nil }
+        let matches = profileStore.profiles.filter { CodexResetNoticeKey.hash($0.id) == manual.profileHash }
+        guard matches.count == 1, let profile = matches.first,
+            let accountID = profile.lastSnapshot?.accountID, CodexResetNoticeKey.hash(accountID) == candidate.accountHash,
+            let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: profile.codexHomeURL),
+            identity.accountID == accountID, profile.matchesRecordedCredential(identity)
+        else { return nil }
+        return maskedAccount(for: profile)
+    }
+
+    @MainActor
+    private func queuePendingManualResetNotices() {
+        guard resetNoticeRevision(.feishu, expiry: false) != nil,
+            let deliveries = try? resetNoticeDeliveryStore.pendingManualResets()
+        else { return }
+        for delivery in deliveries {
+            guard resetNoticeTasks.keys.filter({ $0.hasPrefix("feishu:") }).count < 4,
+                let revision = resetNoticeRevision(.feishu, expiry: false),
+                let source = manualResetSource(for: delivery.candidate),
+                case .manualReset(let manual) = delivery.candidate.content
+            else { continue }
+            let key = "feishu:" + delivery.batchKey
+            guard resetNoticeTasks[key] == nil,
+                let reservation = try? resetNoticeDeliveryStore.reserve(delivery, revision: revision)
+            else { continue }
+            let runRevision = resetNoticeRunRevision
+            let taskID = UUID()
+            let task = Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { if self.resetNoticeTasks[key]?.id == taskID { self.resetNoticeTasks.removeValue(forKey: key) } }
+                let valid: @MainActor () -> Bool = {
+                    !Task.isCancelled && self.resetNoticeRunRevision == runRevision
+                        && self.resetNoticeRevision(.feishu, expiry: false) == revision
+                        && self.manualResetSource(for: delivery.candidate) != nil
+                        && (try? self.resetNoticeDeliveryStore.isCurrent(reservation)) == true
+                }
+                guard valid() else {
+                    _ = try? self.resetNoticeDeliveryStore.releaseUnsent(reservation)
+                    return
+                }
+                let outcome: CodexResetNoticeDeliveryReceipt = await withCheckedContinuation { continuation in
+                    self.feishuWebhookService.sendManualReset(
+                        manual, sourceAccount: source,
+                        messageOptions: self.feishuMessageOptions, shouldSend: valid
+                    ) { result in
+                        DispatchQueue.main.async {
+                            let receipt: CodexResetNoticeDeliveryReceipt
+                            switch result {
+                            case .success: receipt = .accepted
+                            case .failure(let error):
+                                switch error {
+                                case .transportFailed, .invalidResponse: receipt = .uncertain
+                                case .httpStatus(let status): receipt = status == 429 ? .rejected : .uncertain
+                                case .rejected: receipt = .rejected
+                                default: receipt = .notSent
+                                }
+                            }
+                            continuation.resume(returning: receipt)
+                        }
+                    }
+                }
+                do {
+                    if self.resetNoticeRunRevision == runRevision,
+                        self.resetNoticeRevision(.feishu, expiry: false, requiringReadiness: false) == revision
+                    {
+                        guard try self.resetNoticeDeliveryStore.record(reservation, receipt: outcome, currentRevision: revision) else {
+                            self.feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                                "手动使用成功通知的投递记录已变化，结果待核实。", "The manual-use notice record changed; delivery needs verification.")
+                            return
+                        }
+                        if outcome == .accepted {
+                            self.feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                                "飞书 API 已接收手动使用成功通知。", "Feishu API accepted the manual-use success notice.")
+                        }
+                    } else if outcome == .notSent {
+                        _ = try self.resetNoticeDeliveryStore.releaseUnsent(reservation)
+                    } else {
+                        _ = try self.resetNoticeDeliveryStore.markUncertain(reservation)
+                    }
+                } catch {
+                    self.feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
+                        "手动使用成功通知的投递结果待核实，已暂停重发。", "Manual-use notice delivery needs verification; resend is paused.")
+                }
+            }
+            resetNoticeTasks[key] = (taskID, task)
         }
     }
 
@@ -5259,6 +5505,7 @@ final class UsageStore: ObservableObject {
     }
 
     private func resetNoticeIsCurrent(_ candidate: CodexResetNoticeCandidate, now: Date = Date()) -> Bool {
+        if case .manualReset = candidate.content { return manualResetSource(for: candidate) != nil }
         guard let observation = resetNoticeObservations[candidate.accountHash] else { return false }
         let evaluation = CodexResetNoticeEvaluator.evaluate(observation, now: now)
         guard evaluation.verificationSucceeded else { return false }
@@ -5280,6 +5527,7 @@ final class UsageStore: ObservableObject {
                 && Set(cards).isSubset(of: Set(evaluation.eligibleCards))
         case .change(let change):
             return observation.observedAt >= change.observedAt && evaluation.availableCount == change.available
+        case .manualReset: return false  // Dedicated success queue above.
         }
     }
 
@@ -5299,6 +5547,7 @@ final class UsageStore: ObservableObject {
             let expiry: Bool
             let event: CodexQuotaEvent
             switch delivery.candidate.content {
+            case .manualReset: continue  // Sent without inventing a quota observation.
             case .expiry:
                 expiry = true
                 event = .resetCreditsExpiring(batches: delivery.candidate.expiryBatches, observedAt: delivery.candidate.observedAt)
@@ -5474,7 +5723,7 @@ final class UsageStore: ObservableObject {
                 let facts = try? MessageChannelAccountFacts(
                     fiveHourResetsAt: snapshot.fiveHourQuota?.resetsAt, sevenDayResetsAt: snapshot.sevenDayQuota?.resetsAt,
                     availableResetCredits: snapshot.credits?.resetCredits,
-                    resetCreditExpiries: snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt) ?? []),
+                    resetCreditExpiries: snapshot.credits?.resetCreditExpiries ?? []),
                 let context = try? MessageNoticeContext(
                     sourceAccount: MessageChannelAccountLabel(source.value),
                     observedAt: MessageNoticeFormat.checkedAt(for: event, fallback: snapshot.refreshedAt),
@@ -6513,7 +6762,10 @@ final class UsageStore: ObservableObject {
         resetNoticeRunRevision = UUID()
         resetNoticeLocalRevision = UUID()
         if !isPreview {
-            do { try resetNoticeDeliveryStore.recoverInterruptedSends() } catch {
+            do {
+                try resetNoticeDeliveryStore.recoverInterruptedSends()
+                queuePendingManualResetNotices()
+            } catch {
                 localNotificationMessage = WidgetLanguage.storedOrAutomatic().text(
                     "重置卡提醒记录恢复失败，本次提醒会等待核验。",
                     "Reset-card notice recovery failed. Notices wait for verification.")
@@ -6810,6 +7062,8 @@ final class UsageStore: ObservableObject {
                 queue: .main
             ) { [weak self] _ in
                 self?.checkResetCreditAuto()
+                if self?.feishuNotificationsEnabled == true { self?.refreshFeishuWebhookConfiguration() }
+                self?.messageChannels.recoverSavedConnections()
                 self?.codexInactiveSince = nil
                 self?.updateCodexForegroundState()
                 self?.taskClient.refreshThreads()
@@ -6952,6 +7206,8 @@ final class UsageStore: ObservableObject {
 
     @MainActor
     func stop() {
+        feishuCredentialReadID = nil
+        feishuCredentialRetry.cancel()
         feishuConfigurationRevision += 1
         feishuWebhookService.invalidateCredentialCache()
         feishuWebhookConfigured = false
@@ -6984,6 +7240,9 @@ final class UsageStore: ObservableObject {
         fullRefreshCancellation = nil
         identityRefreshCancellation?.cancel()
         identityRefreshCancellation = nil
+        refreshGeneration &+= 1
+        isRefreshing = false
+        hasPendingRefresh = false
         cancelStatisticsEngine()
         engineQuotaCancellation?.cancel()
         engineQuotaCancellation = nil
@@ -7244,7 +7503,9 @@ final class UsageStore: ObservableObject {
     }
 
     func referralAccount(for profileID: String) throws -> CodexReferralAccount {
-        guard !isPreview, !isLoggingIn, !isLaunchingCodex, !isAccountSwitchTransactionActive,
+        // Unrelated account tasks do not block invitations. The referral client
+        // binds the exact home and revalidates its stable credential identity.
+        guard !isPreview,
             let profile = profiles.first(where: { $0.id == profileID }),
             let credentialHome = profileStore.effectiveCredentialHome(for: profileID)
         else { throw CodexReferralFailure.unavailable }

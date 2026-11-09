@@ -70,7 +70,7 @@ func (rt *runtime) ensureResponseModel(ctx context.Context, model string) error 
 	added := map[string]*registry.ModelInfo{model: proxyModelInfo(model)}
 	// RestoreCooldownStates also retains models absent from today's menu.
 	// Keep those bindings before reconciliation, which otherwise prunes them.
-	for _, id := range rt.ids {
+	for _, id := range rt.registeredIDs() {
 		if account, ok := rt.manager.GetByID(id); ok {
 			for saved := range account.ModelStates {
 				if _, exists := rt.models[saved]; !exists && responseModelID.MatchString(saved) {
@@ -92,7 +92,7 @@ func (rt *runtime) ensureResponseModel(ctx context.Context, model string) error 
 	for _, info := range rt.models {
 		models = append(models, info)
 	}
-	for _, id := range rt.ids {
+	for _, id := range rt.registeredIDs() {
 		registry.GetGlobalRegistry().RegisterClient(id, "codex", models)
 		// RegisterClient resets registry projections. Reapply the manager's
 		// active cooldowns before rebuilding its scheduler model snapshot.

@@ -12,7 +12,7 @@ const INPUT_SHA256 = Object.freeze({
   'src/shared/sessionDetail.js': '7d1535b70659c7af5076a735ae8821db92b9561153dbe1ff23986e2821a8c7a6',
   'src/shared/providers/cursor/selfSync.js': 'be67e2dc92f5fed2204a2f44da3bb09a81486e399eb9165049ffae6246aa98a3',
   'src/shared/providers/antigravity/selfSync.js': '0fd43baf9d818557644ef730edec1eb8968d4811d74d344c98eb0f79efca99b6',
-  'src/electron/main.js': '50764d8004cb36233fc43b9a4fecd0dafc3f3ac431207b18831e3e3f076a56d0',
+  'src/electron/main.js': 'f9a230584b8ba94ea0adb0af8c606b0c9b3953bcbaaea2042912e6ed3e582212',
   'src/electron/edgeDock/controller.js': '9be6e6cf46757edf367644b7e6b788afeef5de2ca5bf49e35d613c45b27c383a',
   'src/electron/discordRpc.js': 'bcd2a36e03a54c04ceadf23a433d7f961684bd1a4265bfd9f5546a7d556c402d',
   'src/electron/preload.js': '05b8ffc8c1eff34aa2249829c9394bdc8dc92357afb686615127b669948a3687',
@@ -21,7 +21,7 @@ const INPUT_SHA256 = Object.freeze({
   'src/electron/renderer/i18n.js': '82ffac80a8fe3bb719254b1e1089322f2d642ac3bac66509258e5da903ab14b4',
   'src/electron/renderer/edgeDock/index.html': '6f8542791c01f67d5c28429b4a7271d3c5145cf53ef6ad15ff33b20cbb40088c',
   'src/electron/renderer/styles.css': 'd6788eae0b0ff6c660fb3a8568f8d47e21926771aee8f197a998c2b0ed04c95a',
-  'src/electron/renderer/app.js': '8b2620f5c5439237160ce38655eda198e0a6b6a67df0e71b5ebdd0e4a0511025',
+  'src/electron/renderer/app.js': 'd795270905870ef741dd691777ae10eb3d49c46fc49d179b33456319d0a8349b',
   'src/electron/renderer/trayComposer.js': '3c2a3c4ad01c10fd0a6eda7f0893de568a2169d307a8a16f99d74e4790af5ef4',
   'src/electron/tray.js': 'c78bf60a9ab5a042800de3761a05b7c77596d8686c7abf554d05358f61fcf417'
 });
@@ -433,6 +433,13 @@ async function switchCodexSystemAccount(id) {`,
   if (IS_AIGOODBRO_EMBEDDED) {
     const hostBridge = globalThis.__AIGOODBRO_TOKEN_MONITOR_BRIDGE__;
     if (!hostBridge) throw new Error('AiGoodBro desktop host bridge is missing');
+    const homeUsage = require('../../aigoodbro/homeUsage.cjs').createHomeUsageProvider({
+      getStats: () => electronPresentationStats(latestStats || localStats),
+      getHistory: () => getDashboardHistory(),
+      getContext: () => JSON.stringify([mode, hubModeGeneration, settings?.hubMode,
+        settings?.hubUrl, settings?.deviceId, settings?.historyEnabled,
+        settings?.modelAliases, settings?.modelAliasGrouping, settings?.clients])
+    });
     hostBridge.bind({
       showDashboard: async () => { await refreshAiGoodBroManagedCodexAccounts(); createDashboardWindow(); },
       showView: async (viewId) => { await refreshAiGoodBroManagedCodexAccounts(); openViewFromTray(viewId); },
@@ -443,6 +450,8 @@ async function switchCodexSystemAccount(id) {`,
         return stats?.aigoodbroUsagePending === true ? null : stats?.periods?.allTime;
       },
       getTokenRate: () => aigoodbroTokenRateSnapshot(),
+      getHomeUsage: (revision) => homeUsage(revision),
+      getHomeUsageScope: () => homeUsage.scopeKey(),
       quit: () => requestAppQuit()
     });
   }

@@ -27,6 +27,9 @@ FULL = [
     'Domain/NextSetup.swift',
     'Domain/TokenFormatter.swift',
     'Domain/AppIconStyle.swift',
+    'Domain/AntigravityProxyAccount.swift',
+    'Domain/PrivacyPreview.swift',
+    'Domain/ProviderLaunchLibrary.swift',
 ]
 SLICES = [
     ('Domain/TokenMonitorEngineModels.swift', 'enum StatisticsEngineChoice:', 'enum TokenMonitorOperation:'),

@@ -472,7 +472,7 @@ final class CodexUsageReader {
             result.account = AccountInfo(
                 type: "chatgpt", planType: limits.planType,
                 emailPresent: !before.email.isEmpty, email: before.email)
-            if result.auxiliaryReadStatus == .unavailable || !quotaOnly {
+            if result.auxiliaryReadStatus == .unavailable || result.needsCreditDetails || !quotaOnly {
                 let remaining = min(budget, 60) - (ProcessInfo.processInfo.systemUptime - started)
                 if remaining > 2 {
                     let auxiliary = readAppServer(
@@ -485,9 +485,11 @@ final class CodexUsageReader {
                             type: account.type, planType: account.planType ?? limits.planType,
                             emailPresent: account.emailPresent, email: account.email)
                         result.cloudLifetimeTokens = auxiliary.cloudLifetimeTokens
-                        if result.auxiliaryReadStatus == .unavailable, let credits = auxiliary.credits {
-                            result.credits = credits
+                        if auxiliary.quotaReadSucceeded, let credits = auxiliary.credits {
+                            result.mergeCreditDetails(credits)
                             result.auxiliaryReadStatus = .legacyRPC
+                        } else if auxiliary.resetCreditAccountID == before.accountID, let credits = auxiliary.credits {
+                            result.mergeResetCreditDetails(credits)
                         }
                     }
                 }
@@ -624,8 +626,10 @@ final class CodexUsageReader {
         }
         mergedShares = replacingGrokSessionShare(in: mergedShares, with: GrokUsageReader.lifetimeTokens())
         mergedShares.sort { $0.tokens > $1.tokens }
+        // An absent optional source adds nothing; it does not invalidate the
+        // verified cc-switch totals or create a zero-valued ZCode share.
+        let zcodeToday = zcodeUsage?.todayTokens ?? 0
         guard let baseToday = local?.allAgentsTodayTokens,
-            let zcodeToday = zcodeUsage?.todayTokens,
             let mergedLifetime = summedTokenCounts(mergedShares.map(\.tokens)),
             let mergedToday = summedTokenCounts([baseToday, zcodeToday])
         else {
@@ -689,7 +693,52 @@ final class CodexUsageReader {
         var monthlyQuota: RateWindow?
         var rateLimitDiagnostics: [String] = []
         var credits: CreditsInfo?
+        // Only a successfully parsed reset summary can supply this RPC identity.
+        var resetCreditAccountID: String?
         var cloudLifetimeTokens: Int64?
+
+        var needsCreditDetails: Bool {
+            guard let credits else { return true }
+            return (!credits.unlimited && credits.balance == nil)
+                || ((credits.resetCredits ?? 0) > 0 && credits.resetCreditExpiries?.isEmpty != false)
+        }
+
+        mutating func mergeCreditDetails(_ current: CreditsInfo) {
+            let previous = credits
+            let hasBalance = current.unlimited || current.balance != nil
+            let count = current.resetCredits ?? previous?.resetCredits
+            let sameCount = current.resetCredits == nil || current.resetCredits == previous?.resetCredits
+            let currentExpiries = current.resetCreditExpiries
+            let displayExpiries =
+                currentExpiries?.isEmpty == false
+                ? currentExpiries : (sameCount ? previous?.resetCreditExpiries : nil) ?? currentExpiries
+            credits = CreditsInfo(
+                hasCredits: hasBalance ? current.hasCredits : previous?.hasCredits ?? false,
+                unlimited: hasBalance ? current.unlimited : previous?.unlimited ?? false,
+                balance: hasBalance ? current.balance : previous?.balance,
+                resetCredits: count, resetCreditDetails: current.resetCreditDetails,
+                reportedResetCreditExpiries: displayExpiries)
+        }
+
+        /// Reset evidence cannot authorize a spendable balance or replace the
+        /// engine's independently verified quota windows.
+        mutating func mergeResetCreditDetails(_ current: CreditsInfo) {
+            guard let count = current.resetCredits else { return }
+            let previous = credits
+            let expiries: [Date]?
+            if count == 0 {
+                expiries = []
+            } else if current.resetCreditDetails != nil {
+                expiries = current.resetCreditExpiries
+            } else {
+                expiries = count == previous?.resetCredits ? previous?.resetCreditExpiries : nil
+            }
+            credits = CreditsInfo(
+                hasCredits: previous?.hasCredits ?? false,
+                unlimited: previous?.unlimited ?? false, balance: previous?.balance,
+                resetCredits: count, resetCreditDetails: count == 0 ? [] : current.resetCreditDetails,
+                reportedResetCreditExpiries: expiries)
+        }
 
         func replacingEngineQuota(_ limits: TokenMonitorCodexLimits, response: TokenMonitorResponse) -> Self {
             func map(_ window: TokenMonitorCodexLimits.Window?) -> RateWindow? {
@@ -700,13 +749,14 @@ final class CodexUsageReader {
             result.quotaReadSucceeded = true
             if let reset = limits.original["resetCredits"],
                 let count = reset["availableCount"]?.double, count.isFinite, count >= 0,
-                let integer = Int(exactly: count)
+                let integer = Int(exactly: count), integer <= 1_000_000
             {
                 let balance = limits.original["credits"]
                 result.credits = CreditsInfo(
                     hasCredits: balance?["hasCredits"] == .bool(true),
                     unlimited: balance?["unlimited"] == .bool(true), balance: balance?["balance"]?.string,
-                    resetCredits: integer, resetCreditDetails: nil)
+                    resetCredits: integer, resetCreditDetails: nil,
+                    reportedResetCreditExpiries: integer > 0 ? Self.resetExpiries(reset) : [])
                 result.auxiliaryReadStatus = .upstreamResetCredits
             } else if result.credits == nil {
                 result.auxiliaryReadStatus = .unavailable
@@ -717,6 +767,22 @@ final class CodexUsageReader {
             result.limitId = limits.limitID
             result.membershipRefreshSucceeded = false
             return result
+        }
+
+        private static func resetExpiries(_ reset: TokenMonitorJSON) -> [Date]? {
+            let formatter = ISO8601DateFormatter()
+            func parse(_ value: TokenMonitorJSON) -> Date? {
+                guard let text = value.string, text.count <= 64 else { return nil }
+                formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                if let date = formatter.date(from: text) { return date }
+                formatter.formatOptions = [.withInternetDateTime]
+                return formatter.date(from: text)
+            }
+            if case .array(let values) = reset["expirations"], !values.isEmpty, values.count <= 1024 {
+                let dates = values.compactMap(parse)
+                return dates.count == values.count ? dates.sorted() : nil
+            }
+            return reset["nextExpiresAt"].flatMap(parse).map { [$0] }
         }
     }
 
@@ -834,10 +900,10 @@ final class CodexUsageReader {
             ), CodexResetCreditVersion.supports(String(data: versionData, encoding: .utf8))
         else { return .failure(.unsupportedCLI) }
 
-        // Managed accounts have a separate home and an account-scoped maintenance
-        // reservation in the controller. Unrelated CLI/Desktop processes do not
-        // block their reset; the shared system home retains the conservative gate.
-        if selectedCard != nil, profile.isSystemProfile {
+        // Automatic consumption keeps the conservative shared-home idle gate.
+        // A manually confirmed request may coexist with tasks; its identity and
+        // exact card are still re-read in this same credential-locked conversation.
+        if selectedCard != nil, admission != nil, profile.isSystemProfile {
             guard
                 let processData = try? BoundedLocalProcess.run(
                     executable: URL(fileURLWithPath: "/usr/bin/pgrep"),
@@ -1546,6 +1612,18 @@ final class CodexUsageReader {
     }
 
     private func parseRateLimits(_ result: [String: Any], into snapshot: inout AppServerSnapshot) {
+        let reset = parseResetCreditSummary(result)
+        snapshot.resetCreditAccountID = nil
+        if let reset {
+            if let accountID = result["accountId"] as? String, resetValidField(accountID, maximumBytes: 256),
+                reset.details.map({ $0.count <= reset.count }) ?? true
+            {
+                snapshot.resetCreditAccountID = accountID
+            }
+            snapshot.credits = CreditsInfo(
+                hasCredits: false, unlimited: false, balance: nil,
+                resetCredits: reset.count, resetCreditDetails: reset.details)
+        }
         let selected: [String: Any]?
         if let byId = result["rateLimitsByLimitId"] as? [String: Any],
             let codex = byId["codex"] as? [String: Any]
@@ -1589,74 +1667,46 @@ final class CodexUsageReader {
         }
         snapshot.rateLimitDiagnostics = diagnostics
 
-        var resetCredits: Int?
-        var resetCreditDetails: [ResetCreditDetail]?
-        if let reset = result["rateLimitResetCredits"] as? [String: Any] {
-            if let count64 = resetExactInt64(reset["availableCount"]),
-                (0...1_000_000).contains(count64),
-                let count = Int(exactly: count64)
-            {
-                var detailsAreValid = true
-                var parsedDetails: [ResetCreditDetail]?
-                if let raw = reset["credits"], !(raw is NSNull) {
-                    if let rows = raw as? [[String: Any]], rows.count <= 1_024 {
-                        var seenIDs = Set<String>()
-                        var available: [ResetCreditDetail] = []
-                        for row in rows {
-                            guard let id = row["id"] as? String,
-                                resetValidField(id, maximumBytes: 512),
-                                seenIDs.insert(id).inserted,
-                                let status = row["status"] as? String,
-                                let resetType = row["resetType"] as? String,
-                                let expiry = resetExpiry(in: row)
-                            else {
-                                detailsAreValid = false
-                                break
-                            }
-                            if status == "available", resetType == "codexRateLimits" {
-                                available.append(ResetCreditDetail(id: id, expiresAt: expiry))
-                            }
-                        }
-                        parsedDetails = available.sorted { lhs, rhs in
-                            switch (lhs.expiresAt, rhs.expiresAt) {
-                            case (let left?, let right?):
-                                return left == right ? lhs.id < rhs.id : left < right
-                            case (.some, .none):
-                                return true
-                            case (.none, .some):
-                                return false
-                            case (.none, .none):
-                                return lhs.id < rhs.id
-                            }
-                        }
-                    } else {
-                        detailsAreValid = false
-                    }
-                }
-                if detailsAreValid {
-                    resetCredits = CodexResetCreditNormalizer.normalizeAvailableCount(count)
-                    resetCreditDetails = parsedDetails
-                }
-            }
-        }
-
         if let credits = limits["credits"] as? [String: Any] {
             snapshot.credits = CreditsInfo(
                 hasCredits: credits["hasCredits"] as? Bool ?? false,
                 unlimited: credits["unlimited"] as? Bool ?? false,
                 balance: stringValue(credits["balance"]),
-                resetCredits: resetCredits,
-                resetCreditDetails: resetCreditDetails
-            )
-        } else if resetCredits != nil {
-            snapshot.credits = CreditsInfo(
-                hasCredits: false,
-                unlimited: false,
-                balance: nil,
-                resetCredits: resetCredits,
-                resetCreditDetails: resetCreditDetails
+                resetCredits: reset?.count,
+                resetCreditDetails: reset?.details
             )
         }
+    }
+
+    private func parseResetCreditSummary(_ result: [String: Any]) -> (count: Int, details: [ResetCreditDetail]?)? {
+        guard let reset = result["rateLimitResetCredits"] as? [String: Any],
+            let count64 = resetExactInt64(reset["availableCount"]),
+            (0...1_000_000).contains(count64), let count = Int(exactly: count64)
+        else { return nil }
+        guard let raw = reset["credits"], !(raw is NSNull) else { return (count, nil) }
+        guard let rows = raw as? [[String: Any]], rows.count <= 1_024 else { return nil }
+        var seenIDs = Set<String>()
+        var available: [ResetCreditDetail] = []
+        for row in rows {
+            guard let id = row["id"] as? String, resetValidField(id, maximumBytes: 512), seenIDs.insert(id).inserted,
+                let status = row["status"] as? String, let resetType = row["resetType"] as? String,
+                let expiry = resetExpiry(in: row)
+            else { return nil }
+            if status == "available", resetType == "codexRateLimits" {
+                available.append(ResetCreditDetail(id: id, expiresAt: expiry))
+            }
+        }
+        return (
+            count,
+            available.sorted { lhs, rhs in
+                switch (lhs.expiresAt, rhs.expiresAt) {
+                case (let left?, let right?): return left == right ? lhs.id < rhs.id : left < right
+                case (.some, .none): return true
+                case (.none, .some): return false
+                case (.none, .none): return lhs.id < rhs.id
+                }
+            }
+        )
     }
 
     private func parseRateWindow(_ value: Any?) -> RateWindow? {

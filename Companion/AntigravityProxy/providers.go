@@ -67,12 +67,41 @@ func (r *backendRouter) refresh(ctx context.Context, c credential) (credential, 
 	}
 	return b.refresh(ctx, c)
 }
+func (r *backendRouter) beginRefresh(ctx context.Context, c credential) (credential, error) {
+	b, err := r.forCredential(c)
+	if err != nil {
+		return credential{}, err
+	}
+	staged, ok := b.(stagedRefreshBackend)
+	if !ok {
+		return credential{}, errors.New("staged_refresh_unavailable")
+	}
+	return staged.beginRefresh(ctx, c)
+}
+func (r *backendRouter) verifyRefresh(ctx context.Context, c credential) (credential, error) {
+	b, err := r.forCredential(c)
+	if err != nil {
+		return credential{}, err
+	}
+	staged, ok := b.(stagedRefreshBackend)
+	if !ok {
+		return credential{}, errors.New("staged_refresh_unavailable")
+	}
+	return staged.verifyRefresh(ctx, c)
+}
 func (r *backendRouter) models(ctx context.Context, c credential) ([]string, error) {
 	b, e := r.forCredential(c)
 	if e != nil {
 		return nil, e
 	}
 	return b.models(ctx, c)
+}
+func (r *backendRouter) catalog(ctx context.Context, c credential) (modelCatalog, error) {
+	b, err := r.forCredential(c)
+	if err != nil {
+		return modelCatalog{}, err
+	}
+	return readModelCatalog(ctx, b, c)
 }
 func (r *backendRouter) execute(ctx context.Context, c credential, q executor.Request, o executor.Options) (executor.Response, error) {
 	b, e := r.forCredential(c)

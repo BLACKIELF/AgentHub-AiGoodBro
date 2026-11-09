@@ -46,8 +46,9 @@ jobs:
 
   macos:
     needs: resolve-version
-    runs-on: macos-14
+    runs-on: macos-15
     env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
       RELEASE_ARCHITECTURES: ${{ github.event_name == 'workflow_dispatch' && inputs.windows == true && 'arm64 x86_64' || 'arm64' }}
     steps:
       - uses: actions/checkout@v4

@@ -178,6 +178,11 @@ struct WorkspacePresentation {
         )
     }
 
+    func quotaObservedAt(monitored: UsageSnapshot) -> Date? {
+        guard usesFocusedQuota, let profile = quotaProfile else { return monitored.refreshedAt }
+        return profile.lastSnapshot?.fetchedAt
+    }
+
     static func selfTest() -> Bool {
         func profile(
             _ id: String, system: Bool = false, email: String? = nil,
@@ -243,6 +248,9 @@ struct WorkspacePresentation {
             monitoredSystem.quotaProfile?.id == "system", health(monitoredSystem) == .current,
             monitoredSystem.quotaSummary(monitored: freshQuota).readSucceeded,
             monitoredSystem.quotaSummary(monitored: freshQuota).fiveHour?.usedPercent == 17,
+            monitoredSystem.quotaObservedAt(monitored: freshQuota) == now,
+            monitoredManaged.quotaObservedAt(monitored: freshQuota) == now,
+            single.quotaObservedAt(monitored: freshQuota) == managed.lastSnapshot?.fetchedAt,
             monitoredManaged.quotaProfile?.id == "managed", health(monitoredManaged) == .failed,
             single.quotaSummary(monitored: .empty).readSucceeded,
             !systemOnly.quotaSummary(monitored: .empty).readSucceeded,

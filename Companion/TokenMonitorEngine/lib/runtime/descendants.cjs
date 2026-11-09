@@ -26,7 +26,7 @@ function install() {
       tracked.add(child);
       const forget = () => tracked.delete(child);
       child.once('exit', forget);
-      child.once('error', forget);
+      child.once('error', () => { if (!child.pid) forget(); });
     }
     return child;
   };
@@ -41,23 +41,52 @@ function trackCount() {
   return tracked.size;
 }
 
-// Sends a signal to every tracked process, then escalates to SIGKILL for any
-// that are still alive. Never throws: a process that already exited is normal.
-function killAll(escalateMs = 250) {
+// Confirm exit before the bridge exits; merely scheduling SIGKILL lets
+// process.exit() discard the timer and orphan a child that ignores SIGTERM.
+// The second deadline bounds an unconfirmed kernel/process failure.
+function killAll(escalateMs = 250, confirmMs = 500) {
   const victims = [...tracked];
-  for (const child of victims) {
-    try { child.kill('SIGTERM'); } catch (_) { /* already gone */ }
-  }
-  if (victims.length === 0) return 0;
-  const escalation = setTimeout(() => {
+  if (victims.length === 0) return Promise.resolve(true);
+  return new Promise(resolve => {
+    const pending = new Set(victims);
+    const listeners = new Map();
+    let escalation;
+    let deadline;
+    let settled = false;
+    const finish = confirmed => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(escalation);
+      clearTimeout(deadline);
+      for (const [child, listener] of listeners) {
+        child.removeListener('exit', listener);
+        child.removeListener('error', listener);
+      }
+      resolve(confirmed);
+    };
     for (const child of victims) {
-      try {
-        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-      } catch (_) { /* already gone */ }
+      const observe = () => {
+        if (child.exitCode != null || child.signalCode != null || !child.pid) {
+          pending.delete(child);
+          if (pending.size === 0) finish(true);
+        }
+      };
+      listeners.set(child, observe);
+      child.once('exit', observe);
+      child.on('error', observe);
+      observe();
     }
-  }, escalateMs);
-  if (typeof escalation.unref === 'function') escalation.unref();
-  return victims.length;
+    if (settled) return;
+    escalation = setTimeout(() => {
+      for (const child of pending) {
+        try { child.kill('SIGKILL'); } catch (_) { /* await exit or the deadline */ }
+      }
+    }, escalateMs);
+    deadline = setTimeout(() => finish(false), escalateMs + confirmMs);
+    for (const child of pending) {
+      try { child.kill('SIGTERM'); } catch (_) { /* still require exit confirmation */ }
+    }
+  });
 }
 
 module.exports = { install, isInstalled, trackCount, killAll };

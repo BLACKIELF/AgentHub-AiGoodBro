@@ -294,7 +294,7 @@ def prepare_stage(stage: Path, manifest: dict) -> dict:
     shutil.copy2(ROOT / manifest["helper"]["brandIcon"], stage / "assets/icon.png")
     shutil.copy2(ROOT / manifest["helper"]["trayIcon"], stage / "assets/tray-curve.png")
     stage.joinpath("aigoodbro").mkdir()
-    for name in ("bootstrap.cjs", "hostBridge.cjs"):
+    for name in ("bootstrap.cjs", "hostBridge.cjs", "homeUsage.cjs"):
         shutil.copy2(DESKTOP / name, stage / "aigoodbro" / name)
     transformed = json.loads(run("node", str(ROOT / manifest["helper"]["transformer"]), str(stage.resolve())))
     require(transformed.get("ok") is True and transformed.get("changed"), "Staging transform did not apply")
@@ -314,6 +314,11 @@ def prepare_stage(stage: Path, manifest: dict) -> dict:
     return {"stageFiles": sum(1 for file in stage.rglob("*") if file.is_file()), "transformChanged": transformed["changed"]}
 
 
+def effective_scanner_pin(manifest: dict, arch: str) -> dict:
+    key = "darwin-" + arch
+    return {**manifest["platforms"][key], **manifest.get("localBackport", {}).get("platforms", {}).get(key, {})}
+
+
 def selected_scanner(stage: Path, architecture: str, cache: Path, offline: bool) -> tuple[str, bytes]:
     # Reuse the engine's reviewed URL/hash gate. Electron and its other native
     # modules keep the v0.68 runtime pin; only the selected scanner is replaced.
@@ -326,16 +331,16 @@ def selected_scanner(stage: Path, architecture: str, cache: Path, offline: bool)
     manifest = json.loads((stage / "scripts/vendor/tokscale.json").read_text())
     require(manifest == json.loads((VENDOR / "upstream/scripts/vendor/tokscale.json").read_text()), "Desktop scanner manifest differs from reviewed source")
     require(manifest["commit"] == source["tokscale"]["commit"], "Desktop scanner provenance differs from engine")
-    require(manifest["platforms"]["darwin-" + arch]["sha256"] == pin["sha256"], "Desktop scanner SHA differs from engine")
-    binary = engine.fetch(pin["url"], cache, pin["sha256"], "sha256", offline)
-    engine.check_arch(binary, arch)
+    require(effective_scanner_pin(manifest, arch)["sha256"] == pin["sha256"], "Desktop scanner SHA differs from engine")
+    require(manifest.get("localBackport") == source["tokscale"].get("localBackport"), "Desktop backport differs from engine")
+    binary = engine.scanner_binary(VENDOR, source, arch, cache, offline)
     return f"node_modules/{pin['package']}/bin/tokscale", binary
 
 
 def replace_scanner_member(members: dict, stage: Path, architecture: str, binary: bytes) -> str:
     arch = "arm64" if architecture == "arm64" else "x64"
     manifest = json.loads((stage / "scripts/vendor/tokscale.json").read_text())
-    pin = manifest["platforms"]["darwin-" + arch]
+    pin = effective_scanner_pin(manifest, arch)
     relative = f"node_modules/{pin['package']}/bin/tokscale"
     require(relative in members and members[relative][1], "Official unpacked scanner slot is missing")
     require(sha256(binary) == pin["sha256"], "Replacement scanner differs from fixed pin")
@@ -454,10 +459,10 @@ def verify_scanner(asar: Path, architecture: str, app: Path, trusted_receipt: Pa
     require(scanner_pin == expected_pin, "Packaged desktop scanner manifest differs from reviewed source")
     require(architecture in ("arm64", "x86_64"), "Unsupported scanner architecture")
     scanner_arch = "arm64" if architecture == "arm64" else "x64"
-    scanner = expected_pin["platforms"]["darwin-" + scanner_arch]
+    scanner = effective_scanner_pin(expected_pin, scanner_arch)
     scanner_relative = f"node_modules/{scanner['package']}/bin/tokscale"
     scanner_content = asar_content(asar, tree, start, scanner_relative)
-    scanner_pre = expected_pin["platforms"]["darwin-" + scanner_arch]["sha256"]
+    scanner_pre = scanner["sha256"]
     scanner_post = sha256(scanner_content)
     if scanner_post != scanner_pre:
         require(trusted_receipt is not None and trusted_receipt.is_file() and not trusted_receipt.is_symlink()
@@ -531,7 +536,7 @@ def verify_bundle(app: Path, manifest: dict, *, check_signature: bool, trusted_r
     require(package["main"] == manifest["helper"]["asarMain"], "Helper main path mismatch")
     require(package["productName"] == manifest["helper"]["displayName"], "Electron product brand mismatch")
     require(sum(relative.startswith("node_modules/") for relative, _ in entries(tree)) == manifest["runtime"]["officialNodeModulesMembers"], "Packaged dependency closure count mismatch")
-    for name in ("bootstrap.cjs", "hostBridge.cjs"):
+    for name in ("bootstrap.cjs", "hostBridge.cjs", "homeUsage.cjs"):
         require(asar_content(asar, tree, start, f"aigoodbro/{name}") == (DESKTOP / name).read_bytes(), f"Packaged host adapter is stale: {name}")
     require(asar_content(asar, tree, start, "assets/icon.png") == (ROOT / manifest["helper"]["brandIcon"]).read_bytes(), "ASAR brand icon mismatch")
     require(asar_content(asar, tree, start, "assets/tray-curve.png") == (ROOT / manifest["helper"]["trayIcon"]).read_bytes(), "ASAR tray icon mismatch")
@@ -639,6 +644,7 @@ def build(runtime: Path, output: Path, *, architecture: str, replace: bool, skip
         result["transformerSHA256"] = transformer_hash
         result["bootstrapSHA256"] = digest_file(DESKTOP / "bootstrap.cjs")
         result["hostBridgeSHA256"] = digest_file(DESKTOP / "hostBridge.cjs")
+        result["homeUsageSHA256"] = digest_file(DESKTOP / "homeUsage.cjs")
         if output.exists():
             shutil.rmtree(output)
         candidate.rename(output)

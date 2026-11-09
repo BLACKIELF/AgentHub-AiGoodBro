@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const { spawn, spawnSync } = require('node:child_process');
 const path = require('node:path');
 const test = require('node:test');
@@ -187,6 +188,66 @@ test('SIGTERM cancels the request, reports cancelled, and exits 4', async () => 
     assert.equal(response.errors[0].code, 'cancelled');
     assertSanitizedDiagnostics(stderr, [home]);
   } finally {
+    fixtures.cleanup(home);
+  }
+});
+
+test('unconfirmed cleanup fails the bridge with a sanitized diagnostic', () => {
+  const home = fixtures.makeHome();
+  try {
+    const layout = fixtures.twoToolsTwoHomes(home);
+    const request = fixtures.baseRequest(home, { sources: [layout.sources[0]],
+      options: { ...fixtures.baseRequest(home).options, timeoutMs: 300 } });
+    const result = runBridge(request, { env: { TOKEN_MONITOR_ENGINE_FIXTURES_MODE: 'cleanup-unconfirmed' } });
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(parseStdout(result).errors[0].code, 'internal_error');
+    assert.ok(result.stderr.includes('descendant-cleanup-unconfirmed'));
+    assertSanitizedDiagnostics(result.stderr, [home]);
+  } finally { fixtures.cleanup(home); }
+});
+
+for (const mode of ['timeout', 'cancel']) test(`a ${mode} bridge confirms its stubborn child is gone before exiting`, async () => {
+  const home = fixtures.makeHome();
+  let bridge;
+  try {
+    const layout = fixtures.twoToolsTwoHomes(home);
+    const request = fixtures.baseRequest(home, { sources: [layout.sources[0]],
+      options: { ...fixtures.baseRequest(home).options, timeoutMs: mode === 'timeout' ? 1500 : 5000 } });
+    bridge = spawn(NODE, [BRIDGE], { env: env({ TOKEN_MONITOR_ENGINE_FIXTURES_MODE: 'stubborn-child' }),
+      cwd: ENGINE_DIR, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    bridge.stdout.on('data', chunk => { stdout += chunk; });
+    bridge.stderr.on('data', chunk => { stderr += chunk; });
+    const completed = new Promise((resolve, reject) => {
+      bridge.on('error', reject);
+      bridge.on('close', resolve);
+    });
+    bridge.stdin.end(JSON.stringify(request));
+    if (mode === 'cancel') {
+      const deadline = Date.now() + 3000;
+      const ready = () => {
+        const root = path.join(home, 'cache/scanner-v1');
+        return fs.existsSync(root) && fs.readdirSync(root).some(name =>
+          fs.existsSync(path.join(root, name, 'fixture-child.pid')));
+      };
+      while (!ready() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+      assert.ok(ready(), 'stubborn child must be ready before cancellation');
+      bridge.kill('SIGTERM');
+    }
+    const exitCode = await completed;
+    assert.equal(exitCode, mode === 'timeout' ? 3 : 4, stderr);
+    assert.equal(JSON.parse(stdout).errors[0].code, mode === 'timeout' ? 'timeout' : 'cancelled');
+    const caches = fs.readdirSync(path.join(home, 'cache/scanner-v1'));
+    const marker = path.join(home, 'cache/scanner-v1', caches[0], 'fixture-child.pid');
+    const pid = Number(fs.readFileSync(marker, 'utf8'));
+    assert.ok(Number.isInteger(pid) && pid > 0);
+    let alive = true;
+    try { process.kill(pid, 0); } catch (error) { if (error.code === 'ESRCH') alive = false; else throw error; }
+    assert.equal(alive, false, 'scanner must not survive the bridge deadline');
+  } finally {
+    // Only this fixture's dedicated process group; a failed assertion must not leak it.
+    if (bridge?.pid) { try { process.kill(-bridge.pid, 'SIGKILL'); } catch (_) {} }
     fixtures.cleanup(home);
   }
 });

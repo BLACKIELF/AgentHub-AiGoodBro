@@ -141,13 +141,54 @@ with (q/'consumer-tests-0913v5.log').open('w') as log:
    log.flush(); print((q/'consumer-tests-0913v5.log').read_text(), end=''); raise SystemExit(p.returncode)
 print((q/'consumer-tests-0913v5.log').read_text(), end='')
 
-# The Home call site and the actual WebKit renderer must keep every metric on
-# one Engine snapshot. A previous Desktop override changed only totals/cost.
+# Desktop history/totals share Token Monitor authority; the Engine fallback
+# keeps its own snapshot and must not receive a Desktop summary override.
 home_slot=s[s.index('    private var homeTokenTotals:'):s.index('    private var compactHomeMetricTiles:')]
 home_view=s[s.index('private struct UpstreamHomeStatistics:'):s.index('private struct ObservedMessageChannelResults:')]
 assert 'state: store.engineState' in home_slot and 'summaryTotals' not in home_slot
-assert 'dashboardJSON: dashboardJSON' in home_view and 'summaryTotals' not in home_view
+assert 'useDesktopStatistics: !store.isPreview && TokenMonitorDesktopController.shared.isBundled' in home_slot
+assert 'dashboardJSON: dashboardJSON' in home_view and 'summaryTotals: sharedTotals' in home_view
 assert 'state.phase == .partial' in home_view and '正在刷新 · 显示上次记录' in home_view
+# Execute the actual two production properties with inert snapshots, rather
+# than duplicating their source-selection logic in the fixture.
+routing=home_view[home_view.index('    private var dashboardJSON:'):home_view.index('    private var statusText:')]
+totals=chart[chart.index('    struct SummaryTotals:'):chart.index('    struct Point:')]
+routing_source='import Foundation\nenum UpstreamTrendView {\n'+totals+'}\n'+'''
+struct HomeRoutingFixture {
+ struct Snapshot { var dashboardJSON: String? }
+ struct Totals { var totalTokens: Int64?; var totalCostUSD: Double?; var costIsPartial: Bool }
+ struct Desktop { var homeUsage: Snapshot; var allTimeUsage: Totals }
+ var state = Snapshot(dashboardJSON: "engine-history")
+ var desktop = Desktop(homeUsage: Snapshot(dashboardJSON: "desktop-history"),
+                       allTimeUsage: Totals(totalTokens: 9000, totalCostUSD: 88, costIsPartial: true))
+ var useDesktopStatistics = false
+'''+routing.replace('private var ', 'var ')+'\n}\n'+r'''
+func checkRouting(_ condition: Bool, _ label: String) {
+ if !condition { print("FAIL home routing: " + label); exit(1) }
+ print("PASS home routing: " + label)
+}
+var route = HomeRoutingFixture()
+checkRouting(route.dashboardJSON == "engine-history", "Engine history follows its snapshot")
+checkRouting(route.sharedTotals == nil, "Engine cannot receive Desktop totals")
+route.useDesktopStatistics = true
+checkRouting(route.dashboardJSON == "desktop-history", "Desktop history follows homeUsage")
+checkRouting(route.sharedTotals == .init(tokens: 9000, costUSD: 88, isPartial: true),
+             "Desktop totals and partial state follow allTimeUsage")
+route.desktop.homeUsage.dashboardJSON = nil
+checkRouting(route.dashboardJSON == nil, "missing Desktop history cannot fall back to Engine")
+route.desktop.allTimeUsage = .init(totalTokens: nil, totalCostUSD: nil, costIsPartial: false)
+checkRouting(route.sharedTotals?.tokens == nil && route.sharedTotals?.costUSD == nil,
+             "unknown Desktop totals stay unknown")
+route.desktop.allTimeUsage = .init(totalTokens: 0, totalCostUSD: 0, costIsPartial: false)
+checkRouting(route.sharedTotals == .init(tokens: 0, costUSD: 0), "Desktop explicit zero is retained")
+route.useDesktopStatistics = false
+checkRouting(route.dashboardJSON == "engine-history" && route.sharedTotals == nil,
+             "returning to Engine clears the Desktop override")
+'''
+routing_file=q/'home-routing.swift'
+routing_file.write_text(routing_source)
+subprocess.run(['xcrun','swiftc','-module-cache-path',str(q/'module-cache'),str(routing_file),'-o',str(q/'home-routing')],check=True)
+subprocess.run([str(q/'home-routing')],check=True)
 web=(args.repo_root.resolve()/'Resources/UpstreamCharts/home-dashboard.js').read_text()
 start=web.index('window.__renderTrend = (input, options = {}) => {')
 end=web.index("\ndocument.addEventListener('click'", start)
@@ -177,9 +218,18 @@ const snapshot={schemaVersion:1, collectedAt:'2026-10-22T12:00:00Z', timezone:'U
       daily:[{date:'2026-10-22',tokens:100,cost:0.5}]},
     allTime:{totalTokens:1000,costUsd:5},periodWindows:{today:{key:'2026-10-22'}}
   }}};
-context.window.__renderTrend(snapshot,{summaryTotals:{tokens:'9999',costUSD:99,costStatus:'known'}});
+const desktopSnapshot={...snapshot,authority:'token-monitor-desktop',payload:{aggregate:{
+  history:{summary:{totalTokens:9000,totalCost:88,activeDays:4,favoriteModel:'desktop-model'},
+    daily:[{date:'2026-10-22',tokens:700,cost:7}]},
+  allTime:{totalTokens:9000,costUsd:88},periodWindows:{today:{key:'2026-10-22'}}
+}}};
+context.window.__renderTrend(desktopSnapshot,{summaryTotals:{tokens:'9999',costUSD:99,costStatus:'known'}});
 assert.equal(home.history.summary.totalTokens,'9999');
 assert.equal(home.history.summary.totalCost,99);
+assert.equal(home.history.summary.activeDays,4);
+assert.equal(home.history.summary.favoriteModel,'desktop-model');
+assert.equal(home.history.daily[0].tokens,700);
+assert.equal(home.history.daily[0].cost,7);
 context.window.__renderTrend(snapshot,{summaryTotals:null});
 assert.equal(home.history.summary.totalTokens,1000);
 assert.equal(home.history.summary.totalCost,5);
@@ -191,7 +241,7 @@ const missingCost={...snapshot,coverage:{cost:'unknown'}};
 context.window.__renderTrend(missingCost,{summaryTotals:null});
 assert.equal(home.history.summary.totalCost,null);
 assert.equal(home.totalCostStatus,'unknown');
-console.log('PASS home all metrics and daily history follow one Engine snapshot');
+console.log('PASS home renderer keeps Desktop history/totals and the Engine no-override snapshot separate');
 '''
 web_result=subprocess.run(['node','-e',web_test,renderer],capture_output=True,text=True)
 if web_result.returncode:

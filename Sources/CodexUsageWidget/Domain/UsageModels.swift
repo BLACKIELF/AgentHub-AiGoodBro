@@ -16,6 +16,13 @@ struct CreditsInfo: Equatable {
     let balance: String?
     let resetCredits: Int?
     let resetCreditDetails: [ResetCreditDetail]?
+    // Display-only expiry evidence from the quota engine carries no consumable card IDs.
+    var reportedResetCreditExpiries: [Date]? = nil
+    var resetCreditExpiries: [Date]? {
+        let detailedDates = resetCreditDetails?.compactMap(\.expiresAt)
+        if detailedDates?.isEmpty == false { return detailedDates }
+        return reportedResetCreditExpiries ?? detailedDates
+    }
 }
 
 struct ResetCreditDetail: Identifiable, Equatable {

@@ -144,11 +144,11 @@ struct AccountInformationView: View {
         }
     }
 
-    private func safe(_ value: String?) -> String {
+    private func safe(_ value: String?, masked: Bool = true) -> String {
         guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "—" }
-        let cleaned = String(value.filter { !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }.prefix(160))
+        let cleaned = String(value.filter { !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }.prefix(masked ? 160 : 254))
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? "—" : AccountDisplay.masked(cleaned)
+        return cleaned.isEmpty ? "—" : (masked ? AccountDisplay.masked(cleaned) : cleaned)
     }
 
     static func hasFreshQuota(_ profile: CodexProfile, now: Date) -> Bool {

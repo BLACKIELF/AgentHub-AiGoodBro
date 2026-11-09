@@ -18,6 +18,7 @@ import Foundation
 import Darwin
 enum HubAccountTaskPhase { case maintenance, starting, running, cancelRequested, uncertain, awaitingAcceptance, succeeded, failed, cancelled, unavailable }
 struct HubAccountTaskStatus { let phase: HubAccountTaskPhase; let updatedAt: Date? }
+enum DispatchParticipationError: Error { case fileAccess }
 enum DispatchParticipationPaths {
     static func supportDirectory() -> URL { fatalError("Live directory must not be used by this fixture") }
 }

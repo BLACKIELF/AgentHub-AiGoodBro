@@ -41,7 +41,7 @@ import SwiftUI
                     let model = TaskWorkbenchStore.preview(presentation)
                     let view = VStack(alignment: .leading, spacing: 0) {
                         Text("合成预览 · 未连接账号、未发起模型请求").font(.caption2).foregroundStyle(.secondary).padding(12)
-                        TaskWorkbenchView(model: model, onRefresh: {})
+                        TaskWorkbenchView(model: model, onRefresh: { model.rebuild() })
                         Spacer(minLength: 0)
                     }.frame(width: width, height: 1120).background(dark ? Color.black.opacity(0.92) : Color.white)
                         .environment(\.widgetLanguage, .zh).environment(\.colorScheme, dark ? .dark : .light)
@@ -86,7 +86,7 @@ import SwiftUI
                     sizes.append(["file": name, "width": Int(width), "height": Int(height), "syntheticOnly": true])
                     if language == .en {
                         let model = TaskWorkbenchStore.preview(presentation)
-                        let view = TaskWorkbenchView(model: model, onRefresh: {})
+                        let view = TaskWorkbenchView(model: model, onRefresh: { model.rebuild() })
                             .frame(width: width, height: 1120, alignment: .topLeading)
                             .background(Color.black.opacity(0.92))
                             .environment(\.widgetLanguage, language).environment(\.colorScheme, .dark)
@@ -98,7 +98,7 @@ import SwiftUI
                 }
                 for filter in [TaskWorkbenchFilter.attention, .running, .deferred] {
                     let model = TaskWorkbenchStore.preview(presentation)
-                    let view = TaskWorkbenchView(model: model, onRefresh: {}, initialFilter: filter)
+                    let view = TaskWorkbenchView(model: model, onRefresh: { model.rebuild() }, initialFilter: filter)
                         .frame(width: 600, height: 1120, alignment: .top)
                         .background(Color.black.opacity(0.92))
                         .environment(\.widgetLanguage, language).environment(\.colorScheme, .dark)
@@ -108,7 +108,7 @@ import SwiftUI
                     model.stop()
                 }
                 let model = TaskWorkbenchStore.preview(presentation)
-                let empty = TaskWorkbenchView(model: model, onRefresh: {}, initialQuery: "No matches")
+                let empty = TaskWorkbenchView(model: model, onRefresh: { model.rebuild() }, initialQuery: "No matches")
                     .frame(width: 320, height: 420, alignment: .topLeading)
                     .background(Color.black.opacity(0.92))
                     .environment(\.widgetLanguage, language).environment(\.colorScheme, .dark)

@@ -126,6 +126,7 @@ stubs = r'''
 import Foundation
 import Darwin
 import CryptoKit
+import os.log
 enum HubAccountTaskPhase { case maintenance, starting, running, cancelRequested, uncertain, awaitingAcceptance, succeeded, failed, cancelled, unavailable }
 struct HubAccountTaskStatus { let phase: HubAccountTaskPhase; let updatedAt: Date? }
 enum DispatchParticipationError: Error { case fileAccess }

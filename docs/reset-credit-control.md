@@ -14,10 +14,9 @@ and outcomes; `protocol/common.rs` maps `account/rateLimitResetCredit/consume`; 
 backend-client processors establish timeout/idempotency and exact-`creditId` behavior; and the TUI
 establishes available-card filtering and earliest-expiry selection. The product behavior is also
 described by the [official banked resets article](https://help.openai.com/en/articles/20001498-how-banked-codex-resets-work).
-The activity reservation uses the same normalized account key and Hub alias as login, warm-up and CLI launch; a configured Hub must report idle. Managed accounts use their isolated home and account-scoped reservation, so unrelated Codex processes no longer block redemption. The system-home path retains the conservative process gate. The pipe reader has a 15-second deadline, nonblocking polling and a total 1 MiB output limit so a retained descendant pipe cannot keep its reader alive.
+After both manual confirmations, redemption does not reserve account maintenance, require Hub idle, or reject a running CLI/proxy task. It retains the per-home credential gate and verifies the exact account and card immediately before the RPC. Automatic redemption still requires its maintenance reservation, Hub idle, and conservative system-home process check. The pipe reader has a 15-second deadline, nonblocking polling and a total 1 MiB output limit so a retained descendant pipe cannot keep its reader alive.
 
-Reusing the existing Swift app-server process, per-home credential gate, process bounds, shared activity
-lease, and private atomic store is smaller and safer than importing the Rust clients or adding a manager.
+The paths reuse the existing Swift app-server process, per-home credential gate, process bounds and private atomic store. Only the automatic path requires a shared activity lease.
 
 Only detailed rows whose `resetType` is `codexRateLimits`, status is `available`, identifier is non-empty,
 and expiry is still future are eligible. Account IDs and card IDs are bounded and reject control
@@ -135,6 +134,10 @@ ResetCreditButton(
 `alreadyRedeemed`) and should refresh limits. Result copy states only the concrete outcome and that limits
 will refresh.
 
+`onManualResetConfirmed` is separate: only an official `reset` outcome emits it. It carries a stable hashed attempt ID, a hashed account identity, the internal profile ID, and confirmation time. It never turns `nothingToReset`, `noCredit`, `alreadyRedeemed`, timeout or an unknown result into a new successful consumption. It is emitted even if the view disappears after the consume request has started. The pending journal and duplicate-submit protection remain in force.
+
+Invitation resolution also ignores unrelated global login/launch/switch activity. The referral client still binds the selected profile and effective credential home, checks a stable credential snapshot, and revalidates the account before sending. No real invitation or redemption is sent by the offline regression suite.
+
 The SwiftUI source keeps two separate `alert(isPresented:)` stages. Each stage is reachable only from
 its preceding explicit button, every stage has Cancel with the cancel shortcut, and the final destructive
 button has no default-action shortcut. Alert dismissal calls `cancel()` only when that same stage remains
@@ -142,9 +145,8 @@ active, so advancing from a deliberate button does not cancel the next stage or 
 
 ## Validation and installation boundary
 
-Fifteen isolated checks compile the production controller with synthetic RPC and activity boundaries.
-They cover both confirmations, cancellation at each stage, changed identity, expired review, occupied
-account/Hub, duplicate final actions, one refresh callback, unknown outcomes and idempotent reconciliation.
+The current manual-actions suite compiles the production controller, pending journal, activity store, referral resolver and credential snapshot reader with synthetic RPC boundaries. It covers both confirmations, cancellation, changed identity/card, expired review, an active proxy lease, duplicate final actions, success-only manual receipts, unknown outcomes, idempotent reconciliation, and unrelated busy states during invitation resolution. The automatic suite separately retains its idle and opt-in checks.
+The following installed-protocol observations are historical and do not establish installation of the current candidate.
 The official installed CLI protocol schema was re-generated locally before the explicitly requested
 live redemptions. Two requested accounts each returned `reset`; an identity-matched follow-up read
 confirmed exactly one fewer card and restored limit windows. This is protocol evidence, not a test of
@@ -155,3 +157,11 @@ candidate 125 is not installed. This does not establish which build a running pr
 real automatic redemption. Candidate build qualification is recorded separately in the current handoff.
 Installed dialog interaction and real candidate CPU
 measurements still require a later normal app lifecycle; the ordinary previews exclude redemption.
+
+### 手动成功通知
+
+官方单张使用接口明确返回 `reset` 后，界面通过同一成功回调记录脱敏事件，并按已启用的飞书重置卡通知设置排队。通知明确显示“手动使用 1 张重置卡”“官方已确认重置成功”；不猜测重置的是 5 小时还是 7 天窗口，也不以余额下降推断手动操作。其他结果和未知结果不生成成功事件。
+
+事件以请求幂等键、账号和资料的哈希绑定并持久去重。关闭通知时只保存消费确认，不在以后开启时补发历史消息；重启可恢复尚未发送的通知，发送中断或结果不明的通知保留待核实状态，不自动重发。队列在凭据读取后及实际发送前复核当前账号、通知设置和任务身份；飞书 API 接收仅表示平台接受请求，不表示用户已阅读。官方成功到本地回调持久化之间发生崩溃仍可能缺失通知，不承诺必达。
+
+只有同账号两次观察之间恰好一条已持久确认的手动使用事件、余额恰好减少 1 张时，才省略飞书重复余额变化消息及额度重置消息中的重复变化比较；原观察、余额、窗口信息和其他通道保持。无法唯一关联时仍保留原“变化原因未核实”的表达。

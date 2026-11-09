@@ -570,12 +570,19 @@ test('private control socket routes only allowlisted requests after upstream is 
   let totalCost = 19755.13;
   let totalTokens = 27_123_456_789;
   let usageReads = 0;
+  let historyReads = 0;
+  const historyRevision = 'a'.repeat(64);
   bridge.bind({
     showDashboard: () => calls.push('dashboard'),
     showView: (view) => calls.push(`view:${view}`),
     showSettings: (section) => calls.push(section ? `settings:${section}` : 'settings'),
     isTrayVisible: () => true,
     getAllTimeUsage: () => { usageReads += 1; return { totalTokens, costUsd: totalCost }; },
+    getHomeUsage: async revision => {
+      historyReads += 1;
+      return revision === historyRevision ? { revision, unchanged: true }
+        : { revision: historyRevision, dashboardJSON: '{"schemaVersion":1}' };
+    },
     quit: () => calls.push('quit')
   });
   const ready = await request(socketPath, { id: 'ready', cmd: 'status' });
@@ -584,6 +591,15 @@ test('private control socket routes only allowlisted requests after upstream is 
   assert.equal(ready.allTimeTokens, 27_123_456_789);
   assert.equal(ready.allTimeCostUsd, 19755.13);
   assert.equal(usageReads, 1, 'both totals must come from one snapshot read');
+  assert.equal(historyReads, 0, 'status polling does not read full history');
+  const homeUsage = await request(socketPath, { id: 'history', cmd: 'homeUsage' });
+  assert.equal(homeUsage.homeUsage.revision, historyRevision);
+  assert.equal(homeUsage.homeUsage.dashboardJSON, '{"schemaVersion":1}');
+  const unchanged = await request(socketPath, { id: 'unchanged', cmd: 'homeUsage', ifRevision: historyRevision });
+  assert.deepEqual(unchanged.homeUsage, { revision: historyRevision, unchanged: true });
+  assert.equal(historyReads, 2);
+  assert.deepEqual(await request(socketPath, { id: 'badrevision', cmd: 'homeUsage', ifRevision: '../secret' }),
+    { id: null, ok: false, error: 'invalid-revision' });
   for (const value of [0, null, undefined, -1, NaN, Infinity, '100', { token: 'private-fixture' }]) {
     totalCost = value;
     const actual = await request(socketPath, { id: 'cost', cmd: 'status' });

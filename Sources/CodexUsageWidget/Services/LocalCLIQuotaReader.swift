@@ -482,8 +482,7 @@ struct LocalCLIQuotaReader {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         request.setValue("claude-code/2.1.0", forHTTPHeaderField: "User-Agent")
-        let response = try await checkedResponse(for: request)
-        let windows = try Self.parseClaude(response.data)
+        let response = try await checkedResponse(for: request, allowRateLimited: true)
         // Compare the selected source again after the await. OAuth-to-OAuth
         // changes in Keychain are not covered by the store's file metadata.
         // These bytes remain request-local; they are never account identity.
@@ -505,6 +504,14 @@ struct LocalCLIQuotaReader {
                 throw LocalCLIReaderFailure.keychainUnavailable
             }
         }
+        if response.statusCode == 429 {
+            var limited = result(
+                state: .rateLimited, now: now, source: sourceLabel(for: .claudeCode),
+                messageCode: "local_cli_rate_limited")
+            limited.serverRetryAt = ClaudeSubscriptionService.quotaRetryAfter(response.headers, now: Date())
+            return limited
+        }
+        let windows = try Self.parseClaude(response.data)
         return result(
             state: .available,
             now: now,
@@ -542,7 +549,7 @@ struct LocalCLIQuotaReader {
             source: sourceLabel(for: .openCode))
     }
 
-    private func checkedResponse(for request: URLRequest) async throws -> LocalCLIHTTPResponse {
+    private func checkedResponse(for request: URLRequest, allowRateLimited: Bool = false) async throws -> LocalCLIHTTPResponse {
         guard request.url?.scheme == "https", request.url?.user == nil, request.url?.password == nil else {
             throw LocalCLIReaderFailure.invalidResponse
         }
@@ -560,7 +567,9 @@ struct LocalCLIQuotaReader {
         switch response.statusCode {
         case 200: return response
         case 401, 403: throw LocalCLIReaderFailure.unauthorized
-        case 429: throw LocalCLIReaderFailure.rateLimited
+        case 429:
+            if allowRateLimited { return response }
+            throw LocalCLIReaderFailure.rateLimited
         default: throw LocalCLIReaderFailure.unavailable
         }
     }
@@ -754,25 +763,29 @@ extension LocalCLIQuotaReader {
     }
 
     static func parseKimi(_ data: Data) throws -> (plan: String?, windows: [LocalCLIQuotaWindow]) {
-        let root = try object(data)
+        let response = try object(data)
+        let root = (response["data"] as? [String: Any]) ?? response
         let plan = nonempty(root["planName"]) ?? nonempty(root["plan_name"])
         var windows: [LocalCLIQuotaWindow] = []
         // The current endpoint also returns named ratio pools. Keep all four
         // independent windows, including both monthly pools, and never fill a
-        // missing usage ratio with zero.
+        // missing usage ratio with zero. The shared monthly total leads compact
+        // displays; Code short windows do not represent the subscription total.
         if let rawPools = root["usages"], !(rawPools is NSNull) {
             guard let pools = rawPools as? [String: Any] else { throw LocalCLIReaderFailure.invalidResponse }
             for (key, id, label) in [
-                ("limit_5h", "session", "5-hour"), ("limit_7d", "weekly", "7-day"), ("limit_month_total", "monthly", "Monthly"),
+                ("limit_month_total", "monthly", "Total quota"),
+                ("limit_5h", "session", "5-hour"), ("limit_7d", "weekly", "7-day"),
                 ("limit_month_code", "monthly-code", "Monthly Code"),
             ] {
                 guard let raw = pools[key], !(raw is NSNull) else { continue }
                 guard let pool = raw as? [String: Any] else { throw LocalCLIReaderFailure.invalidResponse }
-                guard let rawRatio = pool["used_ratio"], !(rawRatio is NSNull) else { continue }
+                guard let rawRatio = [pool["used_ratio"], pool["usedRatio"]].compactMap({ $0 }).first(where: { !($0 is NSNull) }) else { continue }
                 guard let ratio = strictDouble(rawRatio, allowString: true), ratio >= 0 else { throw LocalCLIReaderFailure.invalidResponse }
                 windows.append(
                     LocalCLIQuotaWindow(
-                        id: id, label: label, usedPercent: min(1, ratio) * 100, resetsAt: parseDate(pool["reset_time"])))
+                        id: id, label: label, usedPercent: min(1, ratio) * 100,
+                        resetsAt: parseDate([pool["reset_time"], pool["resetTime"]].compactMap({ $0 }).first(where: { !($0 is NSNull) }))))
             }
         }
         let ratioPools = windows
@@ -838,14 +851,16 @@ extension LocalCLIQuotaReader {
                     id: key,
                     label: label,
                     usedPercent: try requiredPercent(utilization),
-                    resetsAt: parseDate(window["resets_at"])))
+                    resetsAt: parseDate(window["resets_at"]),
+                    scope: ["seven_day_opus", "seven_day_sonnet", "seven_day_oauth_apps"].contains(key) ? .shared : .account,
+                    sharedPool: ["seven_day_opus", "seven_day_sonnet", "seven_day_oauth_apps"].contains(key) ? label : nil))
         }
         if let rawLimits = root["limits"] {
             guard let limits = rawLimits as? [[String: Any]] else {
                 if !(rawLimits is NSNull) { throw LocalCLIReaderFailure.invalidResponse }
                 return windows
             }
-            for (index, limit) in limits.enumerated() {
+            for limit in limits {
                 if let rawActive = limit["is_active"] {
                     guard let active = strictBool(rawActive) else {
                         throw LocalCLIReaderFailure.invalidResponse
@@ -853,19 +868,22 @@ extension LocalCLIQuotaReader {
                     if !active { continue }
                 }
                 // The account/session aggregates already have their own circles.
-                // Only independently scoped model windows become model circles.
+                // A reported name alone can describe a family, not an API model.
                 guard let model = ((limit["scope"] as? [String: Any])?["model"] as? [String: Any]),
                     let label = LocalCLIQuotaPresentation.boundedLabel(model["display_name"] as? String)
                 else { continue }
                 if let kind = nonempty(limit["kind"]), kind != "weekly_scoped" { continue }
                 if let group = nonempty(limit["group"]), group != "weekly" { continue }
                 guard let percent = limit["percent"], !(percent is NSNull) else { continue }
+                let modelID = LocalCLIQuotaPresentation.boundedLabel((model["id"] ?? model["model_id"]) as? String, maximumUTF8Bytes: 128)
+                let identity = SHA256.hash(data: Data((modelID ?? label).utf8)).map { String(format: "%02x", $0) }.joined()
                 windows.append(
                     LocalCLIQuotaWindow(
-                        id: "limit-\(index)",
+                        id: "model:\(identity)",
                         label: label,
                         usedPercent: try requiredPercent(percent),
-                        resetsAt: parseDate(limit["resets_at"])))
+                        resetsAt: parseDate(limit["resets_at"]), scope: modelID == nil ? .shared : .model,
+                        modelID: modelID, sharedPool: modelID == nil ? label : nil))
             }
         }
         return windows

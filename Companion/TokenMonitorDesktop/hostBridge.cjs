@@ -8,7 +8,7 @@ const { execFileSync } = require('node:child_process');
 
 const MAX_REQUEST_BYTES = 4096;
 const VIEWS = new Set(['home', 'tool', 'status', 'device', 'model', 'project', 'session', 'limits', 'trends']);
-const COMMANDS = new Set(['showDashboard', 'showHome', 'showSettings', 'showView', 'status', 'quit']);
+const COMMANDS = new Set(['showDashboard', 'showHome', 'showSettings', 'showView', 'status', 'homeUsage', 'quit']);
 const HOST_COMMANDS = new Set(['openWorkbench', 'openAccounts', 'openTasks', 'openSettings', 'openEdgeDockSettings', 'checkForUpdates', 'quitHost', 'switchCodexAccount', 'getManagedCodexAccounts']);
 const SETTINGS_SECTIONS = new Set(['menuBar', 'floatingBubble']);
 const EMBEDDED_ENV = new Set([
@@ -106,8 +106,11 @@ function parseRequest(line) {
   if (typeof request.cmd !== 'string' || !COMMANDS.has(request.cmd)) throw new Error('invalid-command');
   const keys = Object.keys(request);
   const allowed = request.cmd === 'showView' ? new Set(['id', 'cmd', 'view'])
-    : request.cmd === 'showSettings' ? new Set(['id', 'cmd', 'section']) : new Set(['id', 'cmd']);
+    : request.cmd === 'showSettings' ? new Set(['id', 'cmd', 'section'])
+      : request.cmd === 'homeUsage' ? new Set(['id', 'cmd', 'ifRevision']) : new Set(['id', 'cmd']);
   if (keys.some((key) => !allowed.has(key))) throw new Error('unexpected-field');
+  if (request.ifRevision !== undefined && (typeof request.ifRevision !== 'string'
+    || !/^[a-f0-9]{64}$/.test(request.ifRevision))) throw new Error('invalid-revision');
   if (request.cmd === 'showView' && !VIEWS.has(request.view)) throw new Error('invalid-view');
   if (request.cmd === 'showSettings' && request.section !== undefined && !SETTINGS_SECTIONS.has(request.section)) throw new Error('invalid-section');
   return request;
@@ -153,7 +156,9 @@ function createHostBridge({ socketPath, hostSocketPath = null, app, logger = () 
   function status() {
     let allTimeTokens = null;
     let allTimeCostUsd = null;
+    let allTimeCostPartial = false;
     let tokenRate = null;
+    let homeUsageScope = null;
     try {
       // Read both metrics from one presentation snapshot, including its source
       // selection. Independent getters can mix revisions or source scopes.
@@ -161,8 +166,13 @@ function createHostBridge({ socketPath, hostSocketPath = null, app, logger = () 
       if (Number.isSafeInteger(usage?.totalTokens) && usage.totalTokens >= 0) allTimeTokens = usage.totalTokens;
       const cost = usage?.costUsd;
       if (typeof cost === 'number' && Number.isFinite(cost) && cost >= 0) allTimeCostUsd = cost;
+      allTimeCostPartial = Number.isFinite(usage?.unpricedTokens) && usage.unpricedTokens > 0;
     } catch (_) {}
     try { tokenRate = tokenRateForStatus(routes?.getTokenRate?.()); } catch (_) {}
+    try {
+      const value = routes?.getHomeUsageScope?.();
+      if (typeof value === 'string' && /^[a-f0-9]{64}$/.test(value)) homeUsageScope = value;
+    } catch (_) {}
     return {
       ready: routes !== null,
       trayVisible: routes !== null && typeof routes.isTrayVisible === 'function' && routes.isTrayVisible() === true,
@@ -170,7 +180,9 @@ function createHostBridge({ socketPath, hostSocketPath = null, app, logger = () 
       version: app.getVersion(),
       allTimeTokens,
       allTimeCostUsd,
-      tokenRate
+      allTimeCostPartial,
+      tokenRate,
+      homeUsageScope
     };
   }
 
@@ -184,6 +196,13 @@ function createHostBridge({ socketPath, hostSocketPath = null, app, logger = () 
     if (cmd === 'status') return reply(socket, { id, ok: true, ...status() });
     if (!routes) return reply(socket, { id, ok: false, error: 'not-ready' });
     try {
+      if (cmd === 'homeUsage') {
+        if (typeof routes.getHomeUsage !== 'function') return reply(socket, { id, ok: false, error: 'not-ready' });
+        // Complete history can come from the user's configured Hub. This is a
+        // read of its existing snapshot, never a collector or credential probe.
+        socket.setTimeout(20000, () => socket.destroy());
+        return reply(socket, { id, ok: true, homeUsage: await routes.getHomeUsage(request.ifRevision) });
+      }
       if (cmd === 'showDashboard') await routes.showDashboard();
       else if (cmd === 'showHome') await routes.showView('home');
       else if (cmd === 'showSettings') await routes.showSettings(request.section);

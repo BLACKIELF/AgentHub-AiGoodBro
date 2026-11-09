@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "cliproxyapi-1107v1",
+  "upstreamModule": "github.com/router-for-me/CLIProxyAPI/v8",
+  "upstreamVersion": "v8.0.58",
+  "upstreamCommit": "e5e6ad1e1b91fc20ab9964e6fb22c0c269b9d882",
+  "moduleSum": "h1:K8MVk7lNikdtGaL46HRCtHd5Qt2hN+QqvybQgGe//1k=",
+  "moduleGoModSum": "h1:HZpmvMfvODHRvoseaqeX6nXTqMfU0Ldz/k9LvIQPJdg=",
+  "license": "MIT",
+  "patches": [],
+  "includedUpstreamFixes": [
+    {
+      "commit": "9e79552fb79461b3ee475c0b30ef33408392db5a",
+      "target": "internal/runtime/executor/codex_executor_terminal.go",
+      "targetSHA256": "1431780c314bb88c5a0b3c086b7c9af228ad224101c6fa2f16a3ce995ca130d3",
+      "behavior": "response.metadata remains buffered before the first generated output or server tool; no local patch is applied."
+    }
+  ],
+  "dependencyReplacements": [
+    {
+      "module": "github.com/MoeForge/moego",
+      "version": "v0.1.0-alpha.1",
+      "replacementModule": "github.com/router-for-me/moego",
+      "replacementVersion": "v0.1.2",
+      "replacementCommit": "d59d7e8c7cd69f2c690f94e6d61975db4313ae72",
+      "moduleSum": "h1:ME0iDkiFZK7N4MDj2C/XMvDT7euvTVIWMYEGd+VQGf0=",
+      "moduleGoModSum": "h1:SBNiQjCpWC3IEBMKFBOwOyhhQ3jywMrISqCwJTdr4aA=",
+      "source": "CLIProxyAPI v8.0.58 go.mod"
+    }
+  ]
+}

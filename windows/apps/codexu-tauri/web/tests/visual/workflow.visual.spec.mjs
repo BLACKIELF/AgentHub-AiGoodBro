@@ -4,8 +4,7 @@ import { installTauriStub } from './tauri-stub.mjs';
 
 test.beforeEach(async ({ page }) => {
   await page.clock.setFixedTime(new Date(FIXED_NOW_ISO));
-  await installTauriStub(page, { settings: SYNTHETIC_SETTINGS, dashboard: SYNTHETIC_DASHBOARD });
-  await page.addInitScript(() => {
+  await installTauriStub(page, { settings: SYNTHETIC_SETTINGS, dashboard: SYNTHETIC_DASHBOARD }, () => {
     const base = window.__TAURI_INTERNALS__.invoke;
     const stored = localStorage.getItem('synthetic-workflow');
     let state = stored ? JSON.parse(stored) : { profile_id: '1', preference: { participating: true, model: null, effort: null, revision: 0 }, phase: 'idle', started_at: null, supported: true };

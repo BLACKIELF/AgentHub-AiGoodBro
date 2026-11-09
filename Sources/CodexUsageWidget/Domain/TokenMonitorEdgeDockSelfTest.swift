@@ -129,6 +129,32 @@ enum TokenMonitorEdgeDockSelfTest {
             accountName: "Claude alias", metrics: [primary]
         )
         let usage = TokenMonitorDashboardSnapshot(response: response(now: now, tokens: Int64.max))
+        var kimiTotalAccount = TokenMonitorFloatingBubbleAccount(
+            providerID: "kimi", providerName: "Kimi Code", accountID: "kimi-total", accountName: "Kimi fixture",
+            metrics: [
+                .init(id: "session", name: "Code 5-hour", sourceID: "kimi:k:session", fetchedAt: now, value: .percentRemaining(100)),
+                .init(id: "weekly", name: "Code 7-day", sourceID: "kimi:k:weekly", fetchedAt: now, value: .percentRemaining(0)),
+                .init(
+                    id: "monthly", name: "Total quota (month)", sourceID: "kimi:k:monthly", fetchedAt: now,
+                    value: .percentRemaining(50.61), resetLabel: "2026-11-24 01:39"),
+            ])
+        func kimiCell(_ account: TokenMonitorFloatingBubbleAccount) -> TokenMonitorEdgeDockCell {
+            TokenMonitorEdgeDockProjection.make(
+                preferences: TokenMonitorEdgeDockPreferences(items: [.limit("kimi")]), quotaSources: [account],
+                usage: usage, language: .en, now: now)[0]
+        }
+        let kimiTotal = kimiCell(kimiTotalAccount)
+        expect(
+            kimiTotal.percentRemaining == 50.61 && kimiTotal.headlineMetricID == "monthly"
+                && kimiTotal.headlineResetLabel == "2026-11-24 01:39"
+                && kimiTotal.severityRemainingPercent == 0 && kimiTotal.accounts[0].quotaRows.count == 3,
+            "Kimi headline uses the precise shared total and its reset independently of Code windows and severity")
+        kimiTotalAccount.metrics.removeAll { $0.id == "monthly" }
+        let kimiMissingTotal = kimiCell(kimiTotalAccount)
+        expect(
+            kimiMissingTotal.percentRemaining == nil && !kimiMissingTotal.isAvailable
+                && kimiMissingTotal.headlineMetricID == "monthly" && kimiMissingTotal.accounts[0].quotaRows.count == 2,
+            "Kimi missing monthly total stays unknown while reported Code windows remain visible")
         // Bind the headline using official plan evidence, never aliases or metric order.
         expect(
             ["pro", " PRO ", "prolite", "pro-lite", "pro_lite"].allSatisfy {
@@ -280,6 +306,11 @@ enum TokenMonitorEdgeDockSelfTest {
             "cached Grok percentage remains visible as last recorded without a current severity signal")
         for providerID in ["codex", "kimi"] {
             var lastGood = primary
+            if providerID == "kimi" {
+                lastGood.id = "monthly"
+                lastGood.name = "Total quota (month)"
+                lastGood.sourceID = "kimi:cached:monthly"
+            }
             lastGood.fetchedAt = now.addingTimeInterval(-601)
             lastGood.isStale = true
             lastGood.value = .percentRemaining(42)
@@ -293,7 +324,8 @@ enum TokenMonitorEdgeDockSelfTest {
             }
             let retained = projected()
             expect(
-                retained.percentRemaining == 42 && retained.isStale && retained.severityRemainingPercent == nil,
+                retained.percentRemaining == 42 && retained.isStale && retained.severityRemainingPercent == nil
+                    && retained.headlineMetricID == lastGood.id,
                 "\(providerID) retains a stale verified number without an actionable severity")
             expect(
                 retained.snapshotFetchedAt == lastGood.fetchedAt && retained.snapshotFetchedAt != usage.collectedAt,
@@ -308,6 +340,11 @@ enum TokenMonitorEdgeDockSelfTest {
             expect(
                 projected().percentRemaining == nil && !projected().isAvailable,
                 "unknown quota never becomes zero")
+            if providerID == "kimi" {
+                expect(
+                    projected().snapshotFetchedAt == lastGood.fetchedAt,
+                    "unknown Kimi total retains the original read time while logged in")
+            }
             account.metrics[0].value = .percentRemaining(42)
             account.isLoggedIn = false
             expect(
@@ -457,8 +494,8 @@ enum TokenMonitorEdgeDockSelfTest {
             accountName: "Kimi alias",
             metrics: [
                 .init(
-                    id: "credits", name: "Credits", sourceID: "kimi:k:credits", fetchedAt: now,
-                    value: .text("5 credits"))
+                    id: "monthly", name: "Total quota (month)", sourceID: "kimi:k:monthly", fetchedAt: now,
+                    value: .percentRemaining(50.61))
             ]
         )
         let sessionPreferences = TokenMonitorEdgeDockPreferences(items: [
@@ -484,8 +521,38 @@ enum TokenMonitorEdgeDockSelfTest {
             firstSessions[1].sessions.isEmpty && firstSessions[1].sessionCount == nil
                 && firstSessions[2].sessions.isEmpty && firstSessions[2].sessionCount == nil
                 && firstSessions[1].isAvailable && firstSessions[2].isAvailable
-                && firstSessions[2].headlineValueLabel == "5 credits",
+                && firstSessions[2].headlineMetricID == "monthly" && firstSessions[2].percentRemaining == 50.61
+                && firstSessions[2].headlineValueLabel == nil,
             "Grok and Kimi keep account and quota cards without session detail monitoring")
+        func timestampSession(lastUsedAt: String?, startedAt: String?) -> TokenMonitorJSON {
+            var fields: [String: TokenMonitorJSON] = ["client": .string("codex"), "totalTokens": .number(10), "sessionKind": .string("")]
+            fields["lastUsedAt"] = lastUsedAt.map(TokenMonitorJSON.string)
+            fields["startedAt"] = startedAt.map(TokenMonitorJSON.string)
+            return .object(fields)
+        }
+        var timestampResult = sessionResult
+        let olderTimestamp = ISO8601DateFormatter().string(from: older)
+        let newerTimestamp = ISO8601DateFormatter().string(from: newer)
+        timestampResult.payload = sessionPayload(
+            [
+                "empty-last": timestampSession(lastUsedAt: "", startedAt: olderTimestamp),
+                "invalid-last": timestampSession(lastUsedAt: "invalid", startedAt: olderTimestamp),
+                "missing-last": timestampSession(lastUsedAt: nil, startedAt: olderTimestamp),
+                "valid-last": timestampSession(lastUsedAt: newerTimestamp, startedAt: olderTimestamp),
+                "invalid-both": timestampSession(lastUsedAt: "invalid", startedAt: ""),
+            ], today: [:])
+        let timestampCells = sessionCells(timestampResult)
+        expect(
+            Set(timestampCells[3].sessions.map(\.id)) == ["empty-last", "invalid-last", "missing-last", "valid-last"],
+            "optional empty or invalid last-used metadata falls back to a valid start; two invalid dates omit the row")
+        expect(
+            timestampCells[3].sessions.first(where: { $0.id == "valid-last" })?.lastUsedAt == newer
+                && timestampCells[3].sessions.filter { $0.id != "valid-last" }.allSatisfy { $0.lastUsedAt == older },
+            "a valid last-used timestamp retains precedence over the start time")
+        expect(
+            Set(timestampCells[0].sessions.map(\.id)).isSubset(of: Set(timestampCells[3].sessions.map(\.id)))
+                && timestampCells[0].sessions.count == 3,
+            "Codex detail and generic session history share the timestamp fallback")
         sessionResult.payload = sessionPayload(
             ["c1": session("grok", at: older), "c2": session("codex", at: newer, ended: true)],
             today: ["c3": session("codex", at: now.addingTimeInterval(-20))]

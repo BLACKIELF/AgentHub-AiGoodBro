@@ -48,8 +48,12 @@ func (a *application) persist(ctx context.Context, c credential, purpose, sessio
 	a.pending[id] = result
 	a.mu.Unlock()
 	defer func() { a.mu.Lock(); delete(a.pending, id); a.mu.Unlock() }()
-	if err := a.events.emit(event{Event: "persist_credential", RequestID: id, SessionID: session, Purpose: purpose,
-		Provider: c.Provider, AccountID: c.AccountID, Generation: c.Generation, Credential: &c}); err != nil {
+	message := event{Event: "persist_credential", RequestID: id, SessionID: session, Purpose: purpose,
+		Provider: c.Provider, AccountID: c.AccountID, Generation: c.Generation, Credential: &c}
+	if purpose == "refresh_pending" || purpose == "refresh_promote" || purpose == "refresh_discard" {
+		message.ExpectedCredentialFingerprint, message.SessionID = session, ""
+	}
+	if err := a.events.emit(message); err != nil {
 		return errors.New("credential_store_unavailable")
 	}
 	timer := time.NewTimer(15 * time.Second)

@@ -1289,14 +1289,19 @@ final class CodexAccountActions {
                     ?? Self.codexDaemonIsRunning()
                 switch Self.pendingSwitchRecoveryDecision(current: currentAuth, journal: journal) {
                 case .preserveExternal:
+                    let confirmedAuth = try Self.authState(at: systemAuthURL)
                     guard
+                        Self.identityDigest(for: currentAuth) != nil,
+                        confirmedAuth == currentAuth,
                         Self.pendingSwitchRecoveryDecision(
-                            current: try Self.authState(at: systemAuthURL),
+                            current: confirmedAuth,
                             journal: journal
                         ) == .preserveExternal
                     else {
                         throw Self.switchError(
-                            WidgetLanguage.storedOrAutomatic().text("清理恢复记录前凭据再次变化；已保留恢复记录", "Credentials changed before cleanup. The recovery record was retained."))
+                            WidgetLanguage.storedOrAutomatic().text(
+                                "当前凭据缺失、损坏或已变化；已保留恢复记录且不覆盖",
+                                "Current credentials are missing, invalid, or changed. The recovery record was retained and nothing was overwritten."))
                     }
                     try Self.clearPendingSwitchJournal(fileManager: fileManager)
                     result = .success(.preservedExternalAuth)
@@ -1619,7 +1624,7 @@ final class CodexAccountActions {
                         else { throw CodexCredentialTransaction.Failure.superseded }
                         try targetAuth.write(to: systemAuthURL, options: .atomic)
                         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: systemAuthURL.path)
-                        guard try Data(contentsOf: systemAuthURL) == targetAuth else {
+                        guard try CodexCredentialTransaction.read(systemAuthURL) == targetAuth else {
                             throw Self.switchError(WidgetLanguage.storedOrAutomatic().text("目标账号凭据写入后校验失败", "Target account credentials could not be verified after writing."))
                         }
                     }
@@ -2248,7 +2253,8 @@ final class CodexAccountActions {
     fileprivate static func validatedManagedAuth(at url: URL, profile: CodexProfile) throws -> Data {
         let data: Data
         do {
-            data = try Data(contentsOf: url)
+            guard let bounded = try CodexCredentialTransaction.read(url) else { throw CocoaError(.fileReadNoSuchFile) }
+            data = bounded
         } catch {
             throw switchError(WidgetLanguage.storedOrAutomatic().text("无法读取目标账号凭据", "Could not read the target account's credentials."))
         }
@@ -2294,11 +2300,8 @@ final class CodexAccountActions {
 
     fileprivate static func authState(at url: URL) throws -> AuthState {
         do {
-            return .data(try Data(contentsOf: url))
-        } catch let error as NSError
-            where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError
-        {
-            return .missing
+            guard let data = try CodexCredentialTransaction.read(url) else { return .missing }
+            return .data(data)
         } catch {
             throw switchError(WidgetLanguage.storedOrAutomatic().text("无法安全读取当前 Codex 凭据；已取消切换", "Current Codex credentials could not be read safely. Switching was canceled."))
         }

@@ -1,4 +1,5 @@
 import CoreFoundation
+import CryptoKit
 import Darwin
 import Foundation
 
@@ -147,9 +148,14 @@ struct DispatchParticipationSync {
     static let maximumCatalogEntries = 26
     static let maximumCatalogFieldBytes = 128
 
+    static func registrationIdentityHash(_ accountID: String) -> String {
+        SHA256.hash(data: Data(accountID.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
     enum Change {
         case participation(Bool)
         case priority(Bool)
+        case registration
     }
 
     struct Identity {
@@ -182,7 +188,8 @@ struct DispatchParticipationSync {
     var checkpoint: (Checkpoint) throws -> Void = { _ in }
     private static let processLock = NSLock()
 
-    /// This is deliberately called only by the UI action, never by a loader.
+    /// Called by explicit settings actions or a verified new-account workflow,
+    /// never by a loader merely discovering an existing account.
     /// Backups precede every target replacement. Each file is atomic; the three
     /// renames are not a crash-atomic transaction across directories.
     func setParticipation(
@@ -228,7 +235,12 @@ struct DispatchParticipationSync {
 
                 // Hub and external tools do not take this lock. Check for changes
                 // before every rename and again after the complete transaction.
-                for index in urls.indices {
+                // Keep the retry intent until both mappings are durable. If the
+                // process exits between files, the next verified refresh can
+                // reconcile the same alias/code instead of losing registration.
+                let replacementOrder: [Int]
+                if case .registration = change { replacementOrder = [1, 2, 0] } else { replacementOrder = Array(urls.indices) }
+                for index in replacementOrder {
                     try checkpoint(.beforeReplace(index))
                     for check in urls.indices {
                         let expected = replaced.contains(check) ? updated[check] : originals[check]
@@ -322,15 +334,27 @@ struct DispatchParticipationSync {
         }
         let enabled: Bool
         let priority: Bool?
+        let registersAccount: Bool
         switch change {
         case .participation(let participates):
             enabled = participates
             priority = participates ? nil : false
+            registersAccount = participates
         case .priority(let prioritizes):
             // Opting into priority also joins dispatch. Removing priority never
             // opts an excluded account in or removes an existing participant.
             enabled = prioritizes || participationStates.first == true
             priority = prioritizes
+            registersAccount = enabled
+        case .registration:
+            guard boolean(selected["isSystemProfile"]) != true,
+                boolean(selected["dispatchRegistrationPending"]) == true
+            else { throw DispatchParticipationError.invalidSnapshot }
+            guard nonempty(selected["dispatchRegistrationIdentity"]) == registrationIdentityHash(identity.accountID)
+            else { throw DispatchParticipationError.identityMismatch }
+            enabled = participationStates.first == true
+            priority = nil
+            registersAccount = true
         }
 
         var hubObject = try object(hub, error: .invalidHub)
@@ -344,7 +368,7 @@ struct DispatchParticipationSync {
         var matches = accounts.indices.filter { index in
             group.contains { canonicalHome($0["codexHomePath"]) == canonicalHome(accounts[index]["home"]) }
         }
-        if enabled {
+        if registersAccount {
             // A click identifies an execution home, even when Desktop is signed
             // into the same account. Never dispatch from the system auth home.
             let managed =
@@ -358,8 +382,8 @@ struct DispatchParticipationSync {
             }
             guard exact.count <= 1 else { throw DispatchParticipationError.ambiguousAccount }
             if exact.isEmpty {
-                // Register a newly saved, credential-verified managed profile in
-                // the same backed-up transaction as its first participation toggle.
+                // Register a credential-verified managed profile in the same
+                // backed-up transaction as its first settings action or sign-in.
                 guard targetID.range(of: #"^[A-Za-z0-9_-]{1,100}$"#, options: .regularExpression) != nil else {
                     throw DispatchParticipationError.identityMismatch
                 }
@@ -367,7 +391,7 @@ struct DispatchParticipationSync {
                 guard !accounts.contains(where: { normalized($0["alias"]) == alias }) else {
                     throw DispatchParticipationError.ambiguousAccount
                 }
-                accounts.append(["alias": alias, "home": targetHome, "dispatchDisabled": false])
+                accounts.append(["alias": alias, "home": targetHome, "dispatchDisabled": !enabled])
                 matches = [accounts.count - 1]
             } else {
                 matches = exact
@@ -426,7 +450,7 @@ struct DispatchParticipationSync {
                 // changing a user's dispatch letter.
                 entries[index]["active"] = false
             }
-        } else if enabled {
+        } else if registersAccount {
             let highest = entries.compactMap { nonempty($0["code"])?.utf8.first }.max().map(Int.init) ?? 64
             guard highest < 90 else { throw DispatchParticipationError.codeExhausted }
             entries.append([
@@ -434,13 +458,20 @@ struct DispatchParticipationSync {
                 "alias": alias,
                 "profileId": profileID,
                 "priority": try nextPriority(after: entries),
-                "active": true,
+                "active": enabled,
             ])
         }
 
         for index in profiles.indices where groupIDs.contains(nonempty(profiles[index]["id"]) ?? "") {
-            profiles[index]["automaticSwitchParticipation"] = enabled
-            if let priority { profiles[index]["prioritizeDispatch"] = priority }
+            if case .registration = change {
+                if nonempty(profiles[index]["id"]) == identity.profileID {
+                    profiles[index].removeValue(forKey: "dispatchRegistrationPending")
+                    profiles[index].removeValue(forKey: "dispatchRegistrationIdentity")
+                }
+            } else {
+                profiles[index]["automaticSwitchParticipation"] = enabled
+                if let priority { profiles[index]["prioritizeDispatch"] = priority }
+            }
         }
         next["profiles"] = profiles
         for index in matches { accounts[index]["dispatchDisabled"] = !enabled }

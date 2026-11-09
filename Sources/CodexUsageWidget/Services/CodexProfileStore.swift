@@ -651,6 +651,10 @@ struct CodexProfile: Codable, Equatable, Identifiable {
     var proTierMultiplier: Int? = nil
     var executionPreference: CodexExecutionPreference? = nil
     var dispatchParticipationWindow: DispatchParticipationWindow? = nil
+    // Set only after the explicit add-account flow verifies a unique identity.
+    // A failed mapping transaction remains retryable without losing the login.
+    var dispatchRegistrationPending: Bool? = nil
+    var dispatchRegistrationIdentity: String? = nil
 
     var participatesInAutomaticSwitch: Bool {
         automaticSwitchParticipation != false
@@ -703,6 +707,16 @@ struct CodexProfile: Codable, Equatable, Identifiable {
         else { return false }
         guard let expectedAccountID = lastSnapshot?.accountID else { return true }
         return identity.accountID == expectedAccountID
+    }
+
+    /// Cross-profile reuse needs an already recorded identity. The permissive
+    /// match above also serves first login and legacy binding in a profile's own home.
+    func matchesVerifiedRecordedIdentity(email: String?, accountID: String?) -> Bool {
+        guard let expectedEmail = Self.normalizedEmail(lastSnapshot?.email),
+            let expectedAccountID = lastSnapshot?.accountID,
+            !expectedAccountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return false }
+        return Self.normalizedEmail(email) == expectedEmail && accountID == expectedAccountID
     }
 
     var recordedAccountKey: String {
@@ -1367,6 +1381,28 @@ final class CodexProfileStore {
     private static func backfillResetCountersFromHistory(in state: inout State) -> Bool {
         var additions: [(key: String, count: Int, lastCountedAt: Date, newestWindowEnd: Date?)] = []
         for group in CodexProfile.groupsByRecordedAccount(state.profiles) {
+            // Mirrors are observations of one series only when identity, limit,
+            // and successful quota evidence agree. Missing evidence cannot infer use.
+            guard let first = group.first?.lastSnapshot,
+                let accountID = first.accountID, !accountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                let limitID = first.limitId?.trimmingCharacters(in: .whitespacesAndNewlines), !limitID.isEmpty,
+                let duration = first.sevenDay?.windowDurationMins, duration > 0,
+                group.allSatisfy({ profile in
+                    guard let snapshot = profile.lastSnapshot,
+                        snapshot.accountID == accountID,
+                        snapshot.limitId?.trimmingCharacters(in: .whitespacesAndNewlines) == limitID,
+                        snapshot.quotaReadSucceeded == true,
+                        snapshot.fetchedAt.timeIntervalSince1970.isFinite,
+                        let window = snapshot.sevenDay,
+                        window.windowDurationMins == duration,
+                        window.usedPercent.isFinite, (0...100).contains(window.usedPercent),
+                        window.resetsAt?.timeIntervalSince1970.isFinite == true
+                    else { return false }
+                    return profile.lastQuotaReadFailureAt.map {
+                        $0.timeIntervalSince1970.isFinite && $0 < snapshot.fetchedAt
+                    } ?? true
+                })
+            else { continue }
             let windows =
                 group
                 .compactMap { profile -> (fetchedAt: Date, window: CodexQuotaWindowSnapshot)? in
@@ -1376,6 +1412,9 @@ final class CodexProfileStore {
                 }
                 .sorted { $0.fetchedAt < $1.fetchedAt }
             guard windows.count >= 2,
+                !zip(windows, windows.dropFirst()).contains(where: {
+                    $0.fetchedAt == $1.fetchedAt && $0.window != $1.window
+                }),
                 let key = group.first?.recordedAccountKey,
                 state.resetCounters?[key]?.lastCountedResetAt == nil
             else { continue }
@@ -1416,6 +1455,7 @@ final class CodexProfileStore {
     }
 
     var profiles: [CodexProfile] { state.profiles }
+    var hasReliableProfileList: Bool { !persistenceBlocked }
     var selectedMonitorProfileID: String { state.selectedMonitorProfileID }
     var selectedLaunchProfileID: String { state.selectedLaunchProfileID }
 
@@ -1611,8 +1651,7 @@ final class CodexProfileStore {
             let target =
                 self.state.profiles.first {
                     !$0.isSystemProfile
-                        && $0.matchesRecordedAccount(email: system.lastSnapshot?.email)
-                        && $0.lastSnapshot?.accountID == system.lastSnapshot?.accountID
+                        && $0.matchesVerifiedRecordedIdentity(email: system.lastSnapshot?.email, accountID: system.lastSnapshot?.accountID)
                 } ?? system
             selectedID = target.id
             guard self.state.selectedMonitorProfileID != target.id else { return false }
@@ -1689,11 +1728,23 @@ final class CodexProfileStore {
     /// External synchronization is an explicit UI action; ordinary persistence,
     /// startup backfills and snapshot reads never enter this path.
     func setDispatchParticipationFromUI(_ enabled: Bool, for id: String) throws {
-        try setDispatchSettingsFromUI(.participation(enabled), for: id)
+        try applyDispatchSettings(.participation(enabled), for: id)
     }
 
     func setDispatchPriorityFromUI(_ enabled: Bool, for id: String) throws {
-        try setDispatchSettingsFromUI(.priority(enabled), for: id)
+        try applyDispatchSettings(.priority(enabled), for: id)
+    }
+
+    @discardableResult
+    func registerPendingDispatchProfile(for id: String) throws -> Bool {
+        guard let profile = state.profiles.first(where: { $0.id == id }),
+            !profile.isSystemProfile, profile.dispatchRegistrationPending == true
+        else { return false }
+        guard let accountID = profile.lastSnapshot?.accountID,
+            profile.dispatchRegistrationIdentity == DispatchParticipationSync.registrationIdentityHash(accountID)
+        else { throw DispatchParticipationError.identityMismatch }
+        try applyDispatchSettings(.registration, for: id)
+        return true
     }
 
     func setDispatchParticipationWindow(_ window: DispatchParticipationWindow, for id: String) throws {
@@ -1708,7 +1759,7 @@ final class CodexProfileStore {
         }
     }
 
-    private func setDispatchSettingsFromUI(_ change: DispatchParticipationSync.Change, for id: String) throws {
+    private func applyDispatchSettings(_ change: DispatchParticipationSync.Change, for id: String) throws {
         guard !persistenceBlocked,
             let profile = state.profiles.first(where: { $0.id == id }),
             let system = state.profiles.first(where: \.isSystemProfile)
@@ -1720,6 +1771,7 @@ final class CodexProfileStore {
         let requiresFreshQuota: Bool
         switch change {
         case .participation(let enabled), .priority(let enabled): requiresFreshQuota = enabled
+        case .registration: requiresFreshQuota = true
         }
         let identity = try Self.validatedDispatchIdentity(
             for: profile,
@@ -1875,7 +1927,7 @@ final class CodexProfileStore {
         guard !profile.isSystemProfile,
             let system = state.profiles.first(where: \.isSystemProfile),
             let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: system.codexHomeURL),
-            profile.matchesRecordedCredential(identity)
+            profile.matchesVerifiedRecordedIdentity(email: identity.email, accountID: identity.accountID)
         else { return profile.codexHomeURL }
         return system.codexHomeURL
     }
@@ -1918,7 +1970,8 @@ final class CodexProfileStore {
         for profileID: String,
         allowAccountOnly: Bool = false,
         allowSystemAccountChange: Bool = false,
-        noticeChannels: [String]? = nil
+        noticeChannels: [String]? = nil,
+        requestDispatchRegistration: Bool = false
     ) throws -> CodexResetCreditReceipt? {
         guard CodexResetCreditReceipt.validNoticeChannels(noticeChannels) else {
             throw NSError(
@@ -1978,7 +2031,7 @@ final class CodexProfileStore {
                 let previous = self.state.profiles[index].lastSnapshot
                 let successfulSnapshotAtSameTime =
                     previous?.fetchedAt == snapshot.refreshedAt
-                    && previous?.quotaReadSucceeded != false
+                    && previous?.quotaReadSucceeded == true
                 guard !successfulSnapshotAtSameTime else { return false }
                 // 额度读取失败时保留旧数据，但必须留下可见的失败痕迹，
                 // 避免账号凭证失效后快照无限期静默过期。
@@ -2009,8 +2062,7 @@ final class CodexProfileStore {
                     self.state.profiles[index].remark = nil
                     let matchingManagedProfile = self.state.profiles.first {
                         !$0.isSystemProfile
-                            && $0.matchesRecordedAccount(email: snapshot.account?.email)
-                            && ($0.lastSnapshot?.accountID == nil || $0.lastSnapshot?.accountID == verifiedAccountID)
+                            && $0.matchesVerifiedRecordedIdentity(email: snapshot.account?.email, accountID: verifiedAccountID)
                     }
                     self.state.profiles[index].chromeProfile = matchingManagedProfile?.chromeProfile
                     self.state.profiles[index].automaticSwitchParticipation =
@@ -2042,8 +2094,8 @@ final class CodexProfileStore {
                     ? previousSnapshot?.availableResetCredits ?? snapshot.credits?.resetCredits
                     : snapshot.credits?.resetCredits,
                 resetCreditExpiries: mergesEqualObservation
-                    ? previousSnapshot?.resetCreditExpiries ?? snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt).sorted()
-                    : snapshot.credits?.resetCreditDetails?.compactMap(\.expiresAt).sorted(),
+                    ? previousSnapshot?.resetCreditExpiries ?? snapshot.credits?.resetCreditExpiries?.sorted()
+                    : snapshot.credits?.resetCreditExpiries?.sorted(),
                 creditBalance: mergesEqualObservation
                     ? previousSnapshot?.creditBalance ?? CreditBalancePresentation.normalizedBalance(snapshot.credits?.balance)
                     : CreditBalancePresentation.normalizedBalance(snapshot.credits?.balance),
@@ -2055,9 +2107,9 @@ final class CodexProfileStore {
                     ? previousSnapshot?.appServerVersion ?? appServerVersion
                     : appServerVersion,
                 quotaReadSucceeded: snapshot.quotaReadSucceeded
-                    || (mergesEqualObservation && (previousSnapshot?.quotaReadSucceeded ?? true))
+                    || (mergesEqualObservation && previousSnapshot?.quotaReadSucceeded == true)
             )
-            let previousSevenDay = self.state.profiles[index].lastSnapshot?.sevenDay
+            let previousSevenDay = self.resetCountingBaseline(for: record, profileIndex: index)
             if acceptsQuotaRead {
                 if let receipt = CodexResetCreditReceipt.change(
                     previousProfiles: self.state.profiles, current: record, noticeChannels: noticeChannels)
@@ -2069,6 +2121,12 @@ final class CodexProfileStore {
                 }
             }
             self.state.profiles[index].lastSnapshot = record
+            if requestDispatchRegistration, !profile.isSystemProfile, hasBoundCredential,
+                let verifiedAccountID
+            {
+                self.state.profiles[index].dispatchRegistrationPending = true
+                self.state.profiles[index].dispatchRegistrationIdentity = DispatchParticipationSync.registrationIdentityHash(verifiedAccountID)
+            }
             if acceptsQuotaRead {
                 self.state.profiles[index].lastQuotaReadFailureAt = nil
                 self.state.profiles[index].lastQuotaReadFailureReason = nil
@@ -2078,11 +2136,6 @@ final class CodexProfileStore {
                     previous: previousSevenDay,
                     current: record.sevenDay,
                     now: snapshot.refreshedAt
-                ),
-                !self.resetAlreadyObservedInGroup(
-                    previous: previousSevenDay,
-                    current: record.sevenDay,
-                    excludingIndex: index
                 )
             {
                 let key = self.state.profiles[index].recordedAccountKey
@@ -2215,6 +2268,12 @@ final class CodexProfileStore {
                 }
             for target in indices {
                 let previous = self.state.profiles[target]
+                // A mirrored request belongs to the recorded account, not to a
+                // home whose credentials changed while the request was in flight.
+                guard
+                    requestID == nil || target == index
+                        || previous.matchesRecordedCredential(CodexOfficialProfileReader.credentialIdentity(codexHomeURL: previous.codexHomeURL))
+                else { continue }
                 guard date >= (previous.lastWarmUpAt ?? .distantPast) else { continue }
                 // A duplicate/late callback cannot downgrade a completed request.
                 if previous.lastWarmUpSucceeded == true && (requestID != nil || date == previous.lastWarmUpAt) { continue }
@@ -2322,31 +2381,45 @@ final class CodexProfileStore {
         }
     }
 
-    /// 同一账号组内其他卡是否已记录过这轮窗口状态；避免同一次重置被多张卡重复计数。
-    private func resetAlreadyObservedInGroup(
-        previous: CodexQuotaWindowSnapshot?,
-        current: CodexQuotaWindowSnapshot?,
-        excludingIndex index: Int
-    ) -> Bool {
-        guard let current,
-            let currentReset = current.resetsAt,
-            let previousReset = previous?.resetsAt
-        else { return false }
-        let key = state.profiles[index].recordedAccountKey
-        let isNewWindow = abs(currentReset.timeIntervalSince(previousReset)) > 120
-        for (otherIndex, other) in state.profiles.enumerated() where otherIndex != index {
-            guard other.recordedAccountKey == key,
-                let otherReset = other.lastSnapshot?.sevenDay?.resetsAt,
-                abs(otherReset.timeIntervalSince(currentReset)) <= 120
-            else { continue }
-            if isNewWindow { return true }
-            if let otherUsed = other.lastSnapshot?.sevenDay?.usedPercent,
-                abs(otherUsed - current.usedPercent) <= 0.5
-            {
-                return true
-            }
-        }
-        return false
+    /// Compare one verified account's latest observation before replacing this
+    /// profile. A mirror seeing a window does not prove that a reset was counted.
+    private func resetCountingBaseline(
+        for current: CodexAccountSnapshot, profileIndex index: Int
+    ) -> CodexQuotaWindowSnapshot? {
+        let profile = state.profiles[index]
+        guard profile.lastSnapshot?.quotaReadSucceeded == true,
+            profile.matchesVerifiedRecordedIdentity(email: current.email, accountID: current.accountID),
+            current.quotaReadSucceeded == true, current.fetchedAt.timeIntervalSince1970.isFinite,
+            let limitID = current.limitId?.trimmingCharacters(in: .whitespacesAndNewlines), !limitID.isEmpty,
+            let currentWindow = current.sevenDay
+        else { return nil }
+        let mirrors = state.profiles.filter { $0.recordedAccountKey == profile.recordedAccountKey }
+        guard
+            mirrors.allSatisfy({
+                $0.matchesVerifiedRecordedIdentity(email: current.email, accountID: current.accountID)
+                    && $0.lastSnapshot?.limitId?.trimmingCharacters(in: .whitespacesAndNewlines) == limitID
+            })
+        else { return nil }
+        let snapshots = mirrors.compactMap(\.lastSnapshot)
+        guard snapshots.allSatisfy({ $0.fetchedAt.timeIntervalSince1970.isFinite }),
+            let latest = snapshots.max(by: { $0.fetchedAt < $1.fetchedAt }),
+            latest.quotaReadSucceeded == true, current.fetchedAt > latest.fetchedAt,
+            let previousWindow = latest.sevenDay,
+            let duration = previousWindow.windowDurationMins, duration > 0,
+            currentWindow.windowDurationMins == duration,
+            [previousWindow, currentWindow].allSatisfy({
+                $0.usedPercent.isFinite && (0...100).contains($0.usedPercent)
+                    && $0.resetsAt?.timeIntervalSince1970.isFinite == true
+            }),
+            !mirrors.contains(where: {
+                guard let failedAt = $0.lastQuotaReadFailureAt else { return false }
+                return !failedAt.timeIntervalSince1970.isFinite || failedAt >= latest.fetchedAt
+            }),
+            !snapshots.contains(where: {
+                $0.fetchedAt == latest.fetchedAt && ($0.quotaReadSucceeded != true || $0.sevenDay != previousWindow)
+            })
+        else { return nil }
+        return previousWindow
     }
 
     func adjustResetManualOffset(accountKey: String, delta: Int, fallbackExpiry: Date? = nil) throws {

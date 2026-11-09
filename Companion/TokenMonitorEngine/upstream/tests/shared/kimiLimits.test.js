@@ -762,3 +762,19 @@ test('fetchKimiLimits physically aborts a hung request within its configured bou
   assert.equal(provider.status, 'unavailable');
   assert.equal(signal.aborted, true);
 });
+
+
+test('parseKimiUsage keeps the same total under camel-case aliases and never substitutes Code-only quota', () => {
+  const { windows } = parseKimiUsage({ data: { usages: {
+    limit_5h: { usedRatio: 0 },
+    limit_month_total: { used_ratio: null, usedRatio: '0.4939', resetTime: '2026-11-23T17:39:00Z' },
+    limit_month_code: { usedRatio: 0 }
+  } } });
+  const total = windows.find(window => window.kind === 'billing');
+  assert.ok(Math.abs(total.usedPercent - 49.39) < 0.000001);
+  assert.ok(Math.abs(total.remainingPercent - 50.61) < 0.000001);
+  assert.equal(total.resetsAt, '2026-11-23T17:39:00.000Z');
+  assert.equal(total.detail, 'Kimi 49.39% · Code 0%');
+  const codeOnly = parseKimiUsage({ usages: { limit_5h: { usedRatio: 0 }, limit_month_code: { usedRatio: 0.2 } } });
+  assert.equal(codeOnly.windows.some(window => window.kind === 'billing'), false);
+});

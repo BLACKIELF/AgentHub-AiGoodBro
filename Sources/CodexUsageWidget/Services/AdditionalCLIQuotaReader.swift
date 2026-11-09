@@ -416,7 +416,7 @@ extension AdditionalCLIQuotaReader {
                 id: "model:\(modelID)",
                 label: modelID,
                 usedPercent: used,
-                resetsAt: value.reset)
+                resetsAt: value.reset, scope: .model, modelID: modelID)
         }
     }
 

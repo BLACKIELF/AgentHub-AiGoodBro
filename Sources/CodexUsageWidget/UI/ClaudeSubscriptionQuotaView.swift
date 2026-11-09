@@ -11,6 +11,8 @@ enum ClaudeSubscriptionQuotaPresentation {
         let title: String
         let usedPercent: Double?
         let resetsAt: Date?
+        var scope: LocalCLIQuotaScope = .account
+        var modelID: String? = nil
     }
 
     static func primaryWindow(_ id: String, in result: LocalCLIQuotaResult?) -> LocalCLIQuotaWindow? {
@@ -29,7 +31,7 @@ enum ClaudeSubscriptionQuotaPresentation {
             return WindowItem(id: id, title: title(id, language: language), usedPercent: value?.usedPercent, resetsAt: value?.resetsAt)
         }
         let additional = additionalWindows(in: result).map {
-            WindowItem(id: $0.id, title: $0.label, usedPercent: $0.usedPercent, resetsAt: $0.resetsAt)
+            WindowItem(id: $0.id, title: $0.label, usedPercent: $0.usedPercent, resetsAt: $0.resetsAt, scope: $0.scope, modelID: $0.modelID)
         }
         return primary + additional
     }
@@ -87,9 +89,10 @@ struct ClaudeSubscriptionQuotaView: View {
     }
 
     @ViewBuilder private func window(_ item: ClaudeSubscriptionQuotaPresentation.WindowItem) -> some View {
+        let expired = item.resetsAt.map { $0 <= Date() } == true
         VStack(alignment: .leading, spacing: compact ? 2 : 3) {
             QuotaPercentageRing(
-                percent: item.usedPercent.map { 100 - $0 }, diameter: compact ? 32 : 38,
+                percent: isStale || expired ? nil : item.usedPercent.map { 100 - $0 }, diameter: compact ? 32 : 38,
                 accessibilityTitle: item.title + " " + language.text("剩余额度", "remaining quota")
             )
             .fixedSize()
@@ -99,6 +102,22 @@ struct ClaudeSubscriptionQuotaView: View {
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
                 .help(item.title)
+            if item.scope == .shared {
+                Text(language.text("共享额度", "Shared quota"))
+                    .font(.system(size: compact ? 8 : 9)).foregroundStyle(.secondary)
+            } else if item.scope == .model {
+                Text(language.text("逐模型额度", "Per-model quota"))
+                    .font(.system(size: compact ? 8 : 9)).foregroundStyle(.secondary)
+                if let modelID = item.modelID {
+                    Text(modelID).font(.system(size: compact ? 8 : 9, design: .monospaced))
+                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if isStale || expired {
+                Text(isStale ? language.text("额度待刷新", "Refresh required") : language.text("重置时间已过，待刷新", "Reset passed; refresh required"))
+                    .font(.system(size: compact ? 8 : 9)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let reset = item.resetsAt {
                 Text(
                     language.text("重置 ", "Reset ")

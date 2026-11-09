@@ -14,7 +14,8 @@ import (
 // identity-checked host observation must therefore reconcile stale quota before
 // SDK selection. This never refreshes credentials or changes participation.
 type quotaRecovery struct {
-	accounts map[string]*quotaRecoveryAccount // Immutable after startup.
+	mu       sync.RWMutex
+	accounts map[string]*quotaRecoveryAccount
 	manager  *auth.Manager
 }
 
@@ -46,7 +47,7 @@ func newQuotaRecovery(ids []string) *quotaRecovery {
 // after an HTTP client has disconnected. Metadata is copied and the private
 // marker exists only on the post-execution result, never an upstream request.
 func (r *quotaRecovery) ApplyResultPolicy(_ context.Context, result auth.Result) auth.Result {
-	account := r.accounts[result.AuthID]
+	account := r.account(result.AuthID)
 	if account == nil {
 		return result
 	}
@@ -96,7 +97,7 @@ func (s *requestScope) reserveQuotaAccount(id string) {
 	if s.recovery == nil {
 		return
 	}
-	account := s.recovery.accounts[id]
+	account := s.recovery.account(id)
 	if account == nil {
 		return
 	}
@@ -122,7 +123,7 @@ func (s *requestScope) releaseQuotaAccounts() {
 	s.recoveryReserved = nil
 	s.mu.Unlock()
 	for id := range ids {
-		account := s.recovery.accounts[id]
+		account := s.recovery.account(id)
 		account.mu.Lock()
 		account.active--
 		account.mu.Unlock()
@@ -201,11 +202,11 @@ func (rt *runtime) reconcileQuota(ctx context.Context) {
 	// several accounts need evidence and the host control channel is stalled.
 	proofContext, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	for _, id := range rt.ids {
+	for _, id := range rt.registeredIDs() {
 		if proofContext.Err() != nil {
 			return
 		}
-		account := rt.recovery.accounts[id]
+		account := rt.recovery.account(id)
 		if !account.mu.TryLock() {
 			continue
 		}
@@ -246,7 +247,7 @@ func (rt *runtime) withQuotaRecovery(next gin.HandlerFunc) gin.HandlerFunc {
 }
 
 func (rt *runtime) emitRestoredCooldowns() {
-	for _, id := range rt.ids {
+	for _, id := range rt.registeredIDs() {
 		a, ok := rt.manager.GetByID(id)
 		if !ok {
 			continue

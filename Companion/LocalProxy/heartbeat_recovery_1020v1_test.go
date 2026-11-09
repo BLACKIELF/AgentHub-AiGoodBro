@@ -17,7 +17,7 @@ import (
 // inside the handler itself can race test teardown after a client-side timeout.
 func heartbeatTestBridge1020(t *testing.T, handler func(net.Conn, bridgeRequest)) *bridge {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "lp-heartbeat-")
+	dir, err := os.MkdirTemp(os.TempDir(), "lp-heartbeat-")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -63,12 +63,17 @@ def main():
 struct RateWindow { let remainingPercent: Double; let resetsAt: Date? }
 struct UsageSnapshot {
  struct Account { let planType: String? }
- struct Credits { struct Detail { let expiresAt: Date? }; let resetCredits: Int?; let resetCreditDetails: [Detail]? }
+ struct Credits { struct Detail { let expiresAt: Date? }; let resetCredits: Int?; let resetCreditDetails: [Detail]?
+// PRODUCTION_CREDIT_EXPIRIES
+ }
  let fiveHourQuota: RateWindow?; let sevenDayQuota: RateWindow?
  let account: Account?; let credits: Credits?
  var refreshedAt: Date = Date()
 }
 """
+        credit_models = (repo / "Sources/CodexUsageWidget/Domain/UsageModels.swift").read_text()
+        snapshot_stubs = snapshot_stubs.replace("// PRODUCTION_CREDIT_EXPIRIES",
+            between(credit_models, "    // Display-only expiry evidence", "\n}\n\nstruct ResetCreditDetail:"))
         pure_feishu = feishu_types + "\n" + task_completion + "\nenum FeishuWebhookService {\n" + feishu_builders + "\n}\n"
         usage_store = (repo / "Sources/CodexUsageWidget/Services/UsageStore.swift").read_text()
         routing = between(usage_store,

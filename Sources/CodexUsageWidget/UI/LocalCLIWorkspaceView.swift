@@ -468,6 +468,9 @@ struct LocalCLIWorkspaceView: View {
                 }.font(.caption2).foregroundStyle(.secondary)
                 if layout == .cards { claudeCardControls(profile) }
                 claudeSubscriptionCardStatus(profile, result: result, isStale: isStale, layout: layout)
+                if let summary = resetCardSummary(result) {
+                    Label(summary, systemImage: "creditcard").font(.caption2).foregroundStyle(.secondary)
+                }
             }.frame(minWidth: layout == .rows ? 200 : nil, maxWidth: .infinity, alignment: .leading)
             ClaudeSubscriptionQuotaView(
                 result: result, isStale: isStale, language: language
@@ -503,7 +506,16 @@ struct LocalCLIWorkspaceView: View {
         isStale: Bool,
         layout: AccountWorkspaceLayout
     ) -> some View {
-        if isStale, result != nil {
+        if result?.serverRetryAt != nil,
+            let explanation = LocalCLIAccountPresentation.quotaExplanation(kind: .claudeCode, result: result, language: language)
+        {
+            Text((isStale ? language.text("上次快照 · ", "Previous snapshot · ") : "") + explanation)
+                .font(.caption2).foregroundStyle(WorkspaceStatusForeground.warning)
+                .lineLimit(layout == .cards ? 1 : nil)
+                .minimumScaleFactor(layout == .cards ? 0.8 : 1)
+                .frame(height: layout == .cards ? 14 : nil, alignment: .leading)
+                .help(explanation)
+        } else if isStale, result != nil {
             Text(language.text("上次快照 · 请刷新确认", "Previous snapshot · Refresh to confirm"))
                 .font(.caption2).foregroundStyle(WorkspaceStatusForeground.warning)
                 .lineLimit(layout == .cards ? 1 : nil)
@@ -660,17 +672,17 @@ struct LocalCLIWorkspaceView: View {
             ClaudeSubscriptionQuotaView(
                 result: result, isStale: quotaIsStale(profile), language: language,
                 compact: true)
+        } else if let result, !result.quotaObservations.isEmpty {
+            observedQuotas(result, profile: profile, compact: true)
         } else if result?.state == .available, let windows = result?.windows, !windows.isEmpty {
             HStack(alignment: .top, spacing: 10) {
                 ForEach(windows.prefix(2)) { window in
-                    compactHomeQuotaWindow(window)
+                    compactHomeQuotaWindow(window, isStale: quotaIsStale(profile))
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             if windows.count > 2 {
-                Text(language.text("另有 \(windows.count - 2) 项额度 · 管理中查看", "\(windows.count - 2) more limits · View in Manage"))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                moreQuotaWindows(Array(windows.dropFirst(2)), isStale: quotaIsStale(profile))
             }
             if let result, let amount = LocalCLIAccountPresentation.balanceText(kind: kind, result: result, language: language) {
                 Text(LocalCLIAccountPresentation.balanceTitle(kind: kind, language: language) + " " + amount)
@@ -697,16 +709,81 @@ struct LocalCLIWorkspaceView: View {
         }
     }
 
-    private func compactHomeQuotaWindow(_ window: LocalCLIQuotaWindow) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+    private func compactHomeQuotaWindow(_ window: LocalCLIQuotaWindow, isStale: Bool) -> some View {
+        let expired = window.resetsAt.map { $0 <= Date() } == true
+        return VStack(alignment: .leading, spacing: 2) {
             CompactQuotaView(
-                title: window.label, remaining: 100 - window.usedPercent,
-                reset: window.resetsAt, isExpiry: window.isExpiry, horizontalDetails: compactHomeSummary)
+                title: LocalCLIAccountPresentation.quotaTitle(kind: kind, window: window, language: language), remaining: isStale || expired ? nil : 100 - window.usedPercent,
+                reset: window.resetsAt, isExpiry: window.isExpiry, horizontalDetails: compactHomeSummary
+            )
+            .help(LocalCLIAccountPresentation.quotaTitle(kind: kind, window: window, language: language))
+            if isStale || expired {
+                Text(isStale ? language.text("额度待刷新", "Refresh required") : language.text("周期已过，待刷新", "Period passed; refresh required"))
+                    .font(.caption2).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if window.scope == .model {
+                Text(language.text("逐模型额度", "Per-model quota")).font(.caption2).foregroundStyle(.secondary)
+                if let modelID = window.modelID {
+                    Text(modelID).font(.caption2.monospaced()).textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else if window.scope == .shared {
+                Text(language.text("共享额度", "Shared quota")).font(.caption2).foregroundStyle(.secondary)
+            }
+            if kind == .kimi, window.id == "monthly", !isStale, !expired {
+                let format = FloatingPointFormatStyle<Double>.number.precision(.fractionLength(0...2)).locale(language.locale)
+                Text(
+                    language.text(
+                        "已用 \(window.usedPercent.formatted(format))% · 剩余 \((100 - window.usedPercent).formatted(format))%",
+                        "Used \(window.usedPercent.formatted(format))% · Left \((100 - window.usedPercent).formatted(format))%")
+                )
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             if let amount = window.tokenAmountText {
                 Text(amount).font(.system(size: 10).monospacedDigit())
                     .lineLimit(1).minimumScaleFactor(0.85).help(amount)
             }
         }
+    }
+
+    private func moreQuotaWindows(_ windows: [LocalCLIQuotaWindow], isStale: Bool) -> some View {
+        DisclosureGroup(language.text("更多额度（\(windows.count)）", "More limits (\(windows.count))")) {
+            LazyVStack(alignment: .leading, spacing: 10) {
+                ForEach(windows) { compactHomeQuotaWindow($0, isStale: isStale) }
+            }.padding(.top, 6)
+        }.font(.caption)
+    }
+
+    /// Account observations already carry their provider scope. Shared buckets
+    /// are displayed as shared; they never fill missing per-model readings.
+    private func observedQuotas(_ result: LocalCLIQuotaResult, profile: LocalCLIProfile, compact: Bool) -> some View {
+        let rows = result.quotaObservations.map { observedQuotaDisplayRow($0, result: result, profile: profile) }
+        let models = rows.filter { !$0.isShared }
+        let shared = rows.filter(\.isShared)
+        return VStack(alignment: .leading, spacing: 8) {
+            // The local summary does not establish exact model membership.
+            // Keep each shared limit visible in both grouped and model modes.
+            ProviderAccountModelQuotaView(
+                models: models, summary: ProviderModelQuotaPresentation.overview(models: models, shared: shared),
+                language: language, compact: compact, sharedInModelMode: shared)
+        }
+    }
+
+    private func observedQuotaDisplayRow(
+        _ observation: LocalCLIQuotaObservation, result: LocalCLIQuotaResult,
+        profile: LocalCLIProfile
+    ) -> ProviderQuotaDisplayRow {
+        let stale = quotaIsStale(profile) || result.messageCode == "local_cli_antigravity_cached_quota"
+        let expired = observation.resetsAt.map { $0 <= Date() } == true
+        let status: ProviderQuotaDisplayStatus = stale ? .stale : expired ? .expired : observation.remainingPercent == nil ? .unknown : .current
+        let title = observation.sharedPool.map { $0 + " · " + observation.label } ?? observation.label
+        return ProviderQuotaDisplayRow(
+            id: observation.modelID ?? observation.id, title: title, modelID: observation.modelID,
+            remainingFraction: observation.remainingPercent.map { $0 / 100 },
+            resetsAt: observation.resetsAt, observedAt: result.fetchedAt,
+            status: status, isShared: observation.scope == .shared,
+            pool: observation.sharedPool, windowSeconds: observation.windowSeconds)
     }
 
     private func compactHomeActions(_ profile: LocalCLIProfile, layout: AccountWorkspaceLayout) -> some View {
@@ -785,7 +862,7 @@ struct LocalCLIWorkspaceView: View {
                     if kind == .grok, result?.resetCards == nil, let officialUsageURL {
                         grokResetLookupLink(destination: officialUsageURL)
                             .font(.caption2)
-                    } else if kind == .grok, let summary = ResetCardPresentation.summaryText(result?.resetCards, now: Date(), timeZone: .current, language: language) {
+                    } else if let summary = resetCardSummary(result) {
                         Label(summary, systemImage: "creditcard").font(.caption2).foregroundStyle(expiring ? FixedVisualPalette.statusDanger : Color.secondary).lineLimit(2)
                     }
                     if expiring {
@@ -822,19 +899,22 @@ struct LocalCLIWorkspaceView: View {
                 }
                 if isClaudeSubscriptionProfile(profile) {
                     ClaudeSubscriptionQuotaView(result: result, isStale: quotaIsStale(profile), language: language)
+                } else if let result, !result.quotaObservations.isEmpty {
+                    observedQuotas(result, profile: profile, compact: true)
                 } else if let result, !result.windows.isEmpty {
                     if layout == .cards {
                         HStack(alignment: .top, spacing: 12) {
                             ForEach(result.windows.prefix(2)) { window in
-                                embeddedQuotaWindow(window, layout: layout)
+                                embeddedQuotaWindow(window, isStale: quotaIsStale(profile))
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
                     } else {
                         ForEach(result.windows.prefix(2)) { window in
-                            embeddedQuotaWindow(window, layout: layout)
+                            embeddedQuotaWindow(window, isStale: quotaIsStale(profile))
                         }
                     }
+                    if result.windows.count > 2 { moreQuotaWindows(Array(result.windows.dropFirst(2)), isStale: quotaIsStale(profile)) }
                 } else if let result, let amount = LocalCLIAccountPresentation.balanceText(kind: kind, result: result, language: language) {
                     Text(LocalCLIAccountPresentation.balanceTitle(kind: kind, language: language) + " " + amount)
                         .font(.callout.monospacedDigit())
@@ -915,10 +995,10 @@ struct LocalCLIWorkspaceView: View {
                         Text(language.text("正在刷新…", "Refreshing…")).font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                if layout == .cards, kind == .grok {
-                    if result?.resetCards == nil, let officialUsageURL {
+                if layout == .cards {
+                    if kind == .grok, result?.resetCards == nil, let officialUsageURL {
                         grokResetLookupLink(destination: officialUsageURL).font(.caption2)
-                    } else if let summary = ResetCardPresentation.summaryText(result?.resetCards, now: Date(), timeZone: .current, language: language) {
+                    } else if let summary = resetCardSummary(result) {
                         Label(summary, systemImage: "creditcard")
                             .font(.caption2).foregroundStyle(expiring ? FixedVisualPalette.statusDanger : Color.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -945,8 +1025,8 @@ struct LocalCLIWorkspaceView: View {
     }
 
     /// Keep the same short quota track and precise reset date as Home and Codex.
-    private func embeddedQuotaWindow(_ window: LocalCLIQuotaWindow, layout: AccountWorkspaceLayout) -> some View {
-        compactHomeQuotaWindow(window)
+    private func embeddedQuotaWindow(_ window: LocalCLIQuotaWindow, isStale: Bool) -> some View {
+        compactHomeQuotaWindow(window, isStale: isStale)
     }
 
     private func fullAccountCard(_ profile: LocalCLIProfile) -> some View {
@@ -1021,10 +1101,12 @@ struct LocalCLIWorkspaceView: View {
             }
             if isClaudeSubscriptionProfile(profile) {
                 ClaudeSubscriptionQuotaView(result: result, isStale: isStale, language: language)
+            } else if let result, !result.quotaObservations.isEmpty {
+                observedQuotas(result, profile: profile, compact: false)
             } else if let result, !result.windows.isEmpty {
-                HStack(alignment: .top, spacing: 10) {
-                    ForEach(result.windows.prefix(4)) { window in
-                        embeddedQuotaWindow(window, layout: .cards)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), alignment: .topLeading)], alignment: .leading, spacing: 10) {
+                    ForEach(result.windows) { window in
+                        embeddedQuotaWindow(window, isStale: isStale)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -1036,10 +1118,7 @@ struct LocalCLIWorkspaceView: View {
             if kind == .grok, result?.resetCards == nil, let officialUsageURL {
                 grokResetLookupLink(destination: officialUsageURL)
                     .font(.caption)
-            } else if kind == .grok,
-                let summary = ResetCardPresentation.summaryText(
-                    result?.resetCards, now: Date(), timeZone: TimeZone.current, language: language)
-            {
+            } else if let summary = resetCardSummary(result) {
                 HStack(spacing: 6) {
                     Image(systemName: "creditcard")
                     Text(summary)
@@ -1051,21 +1130,6 @@ struct LocalCLIWorkspaceView: View {
                 }
                 .font(.caption)
                 .foregroundStyle(expiringSoon ? Color.primary : Color.secondary)
-            }
-            if let result, result.windows.count > 4 {
-                DisclosureGroup(language.text("更多额度（\(result.windows.count - 4)）", "More limits (\(result.windows.count - 4))")) {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 10) {
-                            ForEach(Array(result.windows.dropFirst(4))) { window in
-                                HStack {
-                                    Text(window.label).lineLimit(2)
-                                    Spacer()
-                                    LocalCLIQuotaWindowDetails(window: window, language: language)
-                                }.font(.caption)
-                            }
-                        }.padding(.top, 6)
-                    }.frame(height: min(CGFloat(result.windows.count - 4) * 44 + 8, 180))
-                }.font(.caption)
             }
             if result?.state == .unsupported, let officialUsageURL {
                 Link(language.text("打开官方用量页", "Open official usage page"), destination: officialUsageURL)
@@ -1123,6 +1187,11 @@ struct LocalCLIWorkspaceView: View {
         .resolve(
             installed: model.executable(for: profile) != nil, result: model.quotas[profile.id],
             stale: model.stale.contains(profile.id) || (model.quotas[profile.id].map { !ResetCardPresentation.isFresh($0.fetchedAt, now: Date()) } ?? false))
+    }
+
+    private func resetCardSummary(_ result: LocalCLIQuotaResult?) -> String? {
+        guard kind == .grok || result?.resetCards != nil else { return nil }
+        return ResetCardPresentation.summaryText(result?.resetCards, now: Date(), timeZone: .current, language: language)
     }
 
     private func quotaIsStale(_ profile: LocalCLIProfile) -> Bool {

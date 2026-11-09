@@ -40,7 +40,9 @@ func text(_ zh: String, _ en: String) -> String { self == .zh ? zh : en }
 struct RateWindow { let remainingPercent: Double; let resetsAt: Date? }
 struct UsageSnapshot {
  struct Account { let planType: String? }
- struct Credits { struct Detail { let expiresAt: Date? }; let resetCredits: Int?; let resetCreditDetails: [Detail]? }
+ struct Credits { struct Detail { let expiresAt: Date? }; let resetCredits: Int?; let resetCreditDetails: [Detail]?
+// PRODUCTION_CREDIT_EXPIRIES
+ }
  let fiveHourQuota: RateWindow?; let sevenDayQuota: RateWindow?
  let account: Account?; let credits: Credits?
 }
@@ -55,6 +57,8 @@ struct FeishuTaskCompletionObserver {
  mutating func observe(_ snapshot: CodexTaskLiveSnapshot, now: Date) -> [Completion] { [] }
 }
 '''
+stubs = stubs.replace("// PRODUCTION_CREDIT_EXPIRIES",
+    between(read("Domain/UsageModels.swift"), "    // Display-only expiry evidence", "\n}\n\nstruct ResetCreditDetail:"))
 parts = [stubs, feishu_types, keychain, expiry_batch, quota, options,
          read("Services/PublicResetTranslation.swift"), announcement, forecast,
          read("Domain/PublicResetForecastNotification.swift"), read("Domain/FeishuTaskCompletionNotification.swift"), pure_feishu]

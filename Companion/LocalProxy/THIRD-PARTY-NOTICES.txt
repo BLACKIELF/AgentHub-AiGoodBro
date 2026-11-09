@@ -1,10 +1,8 @@
-Third-party notices for AiGoodBro Local Proxy 1022v1.
-Generated from modules linked by go list -deps, pinned by go.mod/go.sum.
+AiGoodBro local proxy — compiled third-party module notices
 
-========================================================================
 cloud.google.com/go/compute/metadata v0.3.0
 
-LICENSE
+--- LICENSE ---
 
                                  Apache License
                            Version 2.0, January 2004
@@ -209,10 +207,35 @@ LICENSE
    limitations under the License.
 
 
-========================================================================
+github.com/MoeForge/moego v0.1.0-alpha.1 => github.com/router-for-me/moego v0.1.2
+
+--- LICENSE ---
+MIT License
+
+Copyright (c) 2026 Calcium-Ion
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
 github.com/andybalholm/brotli v1.0.6
 
-LICENSE
+--- LICENSE ---
 Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -234,10 +257,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 
-========================================================================
 github.com/cespare/xxhash/v2 v2.3.0
 
-LICENSE.txt
+--- LICENSE.txt ---
 Copyright (c) 2016 Caleb Spare
 
 MIT License
@@ -262,10 +284,9 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
-========================================================================
 github.com/dlclark/regexp2/v2 v2.5.1
 
-LICENSE
+--- LICENSE ---
 The MIT License (MIT)
 
 Copyright (c) Doug Clark
@@ -289,10 +310,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-========================================================================
 github.com/gabriel-vasile/mimetype v1.4.3
 
-LICENSE
+--- LICENSE ---
 MIT License
 
 Copyright (c) 2018-2020 Gabriel Vasile
@@ -316,10 +336,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-========================================================================
 github.com/gin-contrib/sse v0.1.0
 
-LICENSE
+--- LICENSE ---
 The MIT License (MIT)
 
 Copyright (c) 2014 Manuel Martínez-Almeida
@@ -343,10 +362,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 
-========================================================================
 github.com/gin-gonic/gin v1.10.1
 
-LICENSE
+--- LICENSE ---
 The MIT License (MIT)
 
 Copyright (c) 2014 Manuel Martínez-Almeida
@@ -370,10 +388,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 
-========================================================================
 github.com/go-playground/locales v0.14.1
 
-LICENSE
+--- LICENSE ---
 The MIT License (MIT)
 
 Copyright (c) 2016 Go Playground
@@ -396,10 +413,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-========================================================================
 github.com/go-playground/universal-translator v0.18.1
 
-LICENSE
+--- LICENSE ---
 The MIT License (MIT)
 
 Copyright (c) 2016 Go Playground
@@ -423,10 +439,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-========================================================================
 github.com/go-playground/validator/v10 v10.20.0
 
-LICENSE
+--- LICENSE ---
 The MIT License (MIT)
 
 Copyright (c) 2015 Dean Karn
@@ -451,10 +466,9 @@ SOFTWARE.
 
 
 
-========================================================================
 github.com/google/uuid v1.6.0
 
-LICENSE
+--- LICENSE ---
 Copyright (c) 2009,2014 Google Inc. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -484,22 +498,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-========================================================================
 github.com/gorilla/websocket v1.5.3
 
-AUTHORS
-# This is the official list of Gorilla WebSocket authors for copyright
-# purposes.
-#
-# Please keep the list sorted.
-
-Gary Burd <gary@beagledreams.com>
-Google LLC (https://opensource.google.com/)
-Joachim Bauch <mail@joachim-bauch.de>
-
-
-
-LICENSE
+--- LICENSE ---
 Copyright (c) 2013 The Gorilla WebSocket Authors. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -524,10 +525,9 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-========================================================================
 github.com/klauspost/compress v1.17.4
 
-LICENSE
+--- LICENSE ---
 Copyright (c) 2012 The Go Authors. All rights reserved.
 Copyright (c) 2019 Klaus Post. All rights reserved.
 
@@ -834,10 +834,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
-========================================================================
 github.com/leodido/go-urn v1.4.0
 
-LICENSE
+--- LICENSE ---
 MIT License
 
 Copyright (c) 2018 Leonardo Di Donato
@@ -861,10 +860,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-========================================================================
 github.com/mattn/go-isatty v0.0.20
 
-LICENSE
+--- LICENSE ---
 Copyright (c) Yasuhiro MATSUMOTO <mattn.jp@gmail.com>
 
 MIT License (Expat)
@@ -876,10 +874,9 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
-========================================================================
-github.com/pelletier/go-toml/v2 v2.2.2
+github.com/pelletier/go-toml/v2 v2.4.3-0.20260624044523-35f78d5908f1
 
-LICENSE
+--- LICENSE ---
 The MIT License (MIT)
 
 go-toml v2
@@ -904,10 +901,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-========================================================================
 github.com/pierrec/xxHash v0.1.5
 
-LICENSE
+--- LICENSE ---
 Copyright (c) 2014, Pierre Curto
 All rights reserved.
 
@@ -938,10 +934,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 
-========================================================================
 github.com/redis/go-redis/v9 v9.19.0
 
-LICENSE
+--- LICENSE ---
 Copyright (c) 2013 The github.com/redis/go-redis Authors.
 All rights reserved.
 
@@ -969,10 +964,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-========================================================================
 github.com/refraction-networking/utls v1.8.2
 
-LICENSE
+--- LICENSE ---
 Copyright (c) 2009 The Go Authors. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -1002,10 +996,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-========================================================================
-github.com/router-for-me/CLIProxyAPI/v8 v8.0.38
+github.com/router-for-me/CLIProxyAPI/v8 v8.0.58
 
-LICENSE
+--- LICENSE ---
 MIT License
 
 Copyright (c) 2025-2005.9 Luis Pater
@@ -1029,10 +1022,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-========================================================================
 github.com/sirupsen/logrus v1.9.3
 
-LICENSE
+--- LICENSE ---
 The MIT License (MIT)
 
 Copyright (c) 2014 Simon Eskildsen
@@ -1056,10 +1048,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 
-========================================================================
 github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966
 
-LICENSE
+--- LICENSE ---
 Copyright (c) 2013 skratchdot
 
 Permission is hereby granted, free of charge, to any person
@@ -1084,10 +1075,9 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 
 
-========================================================================
 github.com/tidwall/gjson v1.18.0
 
-LICENSE
+--- LICENSE ---
 The MIT License (MIT)
 
 Copyright (c) 2016 Josh Baker
@@ -1110,10 +1100,9 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
-========================================================================
 github.com/tidwall/match v1.1.1
 
-LICENSE
+--- LICENSE ---
 The MIT License (MIT)
 
 Copyright (c) 2016 Josh Baker
@@ -1136,10 +1125,9 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
-========================================================================
 github.com/tidwall/pretty v1.2.0
 
-LICENSE
+--- LICENSE ---
 The MIT License (MIT)
 
 Copyright (c) 2017 Josh Baker
@@ -1162,37 +1150,9 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
-========================================================================
-github.com/tidwall/sjson v1.2.5
-
-LICENSE
-The MIT License (MIT)
-
-Copyright (c) 2016 Josh Baker
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-
-
-========================================================================
 github.com/tiktoken-go/tokenizer v0.8.1
 
-LICENSE
+--- LICENSE ---
 MIT License
 
 Copyright (c) 2023 tiktoken-go
@@ -1216,10 +1176,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-========================================================================
 github.com/ugorji/go/codec v1.2.12
 
-LICENSE
+--- LICENSE ---
 The MIT License (MIT)
 
 Copyright (c) 2012-2020 Ugorji Nwoke.
@@ -1244,10 +1203,34 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 
-========================================================================
+go.etcd.io/bbolt v1.5.0
+
+--- LICENSE ---
+The MIT License (MIT)
+
+Copyright (c) 2013 Ben Johnson
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
 go.uber.org/atomic v1.11.0
 
-LICENSE.txt
+--- LICENSE.txt ---
 Copyright (c) 2016 Uber Technologies, Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -1269,10 +1252,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 
-========================================================================
-golang.org/x/crypto v0.54.0
+golang.org/x/crypto v0.57.0
 
-LICENSE
+--- LICENSE ---
 Copyright 2009 The Go Authors.
 
 Redistribution and use in source and binary forms, with or without
@@ -1302,10 +1284,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-========================================================================
-golang.org/x/net v0.57.0
+golang.org/x/net v0.60.0
 
-LICENSE
+--- LICENSE ---
 Copyright 2009 The Go Authors.
 
 Redistribution and use in source and binary forms, with or without
@@ -1335,10 +1316,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-========================================================================
 golang.org/x/oauth2 v0.30.0
 
-LICENSE
+--- LICENSE ---
 Copyright 2009 The Go Authors.
 
 Redistribution and use in source and binary forms, with or without
@@ -1368,10 +1348,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-========================================================================
-golang.org/x/sync v0.22.0
+golang.org/x/sync v0.23.0
 
-LICENSE
+--- LICENSE ---
 Copyright 2009 The Go Authors.
 
 Redistribution and use in source and binary forms, with or without
@@ -1401,10 +1380,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-========================================================================
-golang.org/x/sys v0.47.0
+golang.org/x/sys v0.48.0
 
-LICENSE
+--- LICENSE ---
 Copyright 2009 The Go Authors.
 
 Redistribution and use in source and binary forms, with or without
@@ -1434,10 +1412,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-========================================================================
-golang.org/x/text v0.40.0
+golang.org/x/text v0.42.0
 
-LICENSE
+--- LICENSE ---
 Copyright 2009 The Go Authors.
 
 Redistribution and use in source and binary forms, with or without
@@ -1467,10 +1444,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-========================================================================
 google.golang.org/protobuf v1.34.1
 
-LICENSE
+--- LICENSE ---
 Copyright (c) 2018 The Go Authors. All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -1500,10 +1476,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-========================================================================
 gopkg.in/natefinch/lumberjack.v2 v2.2.1
 
-LICENSE
+--- LICENSE ---
 The MIT License (MIT)
 
 Copyright (c) 2014 Nate Finch
@@ -1526,10 +1501,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-========================================================================
 gopkg.in/yaml.v3 v3.0.1
 
-LICENSE
+--- LICENSE ---
 
 This project is covered by two different licenses: MIT and Apache.
 
@@ -1582,7 +1556,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 
-NOTICE
+--- NOTICE ---
 Copyright 2011-2016 Canonical Ltd.
 
 Licensed under the Apache License, Version 2.0 (the "License");

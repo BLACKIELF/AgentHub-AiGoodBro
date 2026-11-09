@@ -13,6 +13,7 @@ enum TokenMonitorIntegrationSelfTest {
         await verifyDisabledStartup(expect: expect)
         await verifyReadAndPublishIsolation(expect: expect)
         await verifyStaleRevisionAndCancellation(expect: expect)
+        verifyStatusProviderScopes(expect: expect)
         await verifyStatusRetainsLastGood(expect: expect)
         await verifyTransportRejectsRedirectsAndSanitizesErrors(expect: expect)
 
@@ -131,6 +132,33 @@ enum TokenMonitorIntegrationSelfTest {
         await cancellationTask.value
         expect(store.connectionState == .idle && store.error == nil, "cancelled Hub refresh restores the prior state without reporting a failure")
         expect(store.devices.first?.hostname == "device-before" && store.history == oldHistory, "cancelled Hub refresh retains last-good data")
+    }
+
+    private static func verifyStatusProviderScopes(expect: Expect) {
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        let healthy = Data(#"{"status":{"indicator":"none","description":"All Systems Operational"}}"#.utf8)
+        let kimi = TokenMonitorServiceStatusStore.summarize(provider: .kimi, data: healthy, checkedAt: now)
+        expect(kimi?.state == .operational && kimi?.pageURL == "https://status.moonshot.cn", "Kimi uses the upstream official status page")
+        expect(
+            TokenMonitorServiceStatusProvider.minimax.pageURL != TokenMonitorServiceStatusProvider.minimaxInternational.pageURL,
+            "MiniMax China and International remain independent status sources")
+        let unrelatedOutage = Data(
+            #"{"status":{"indicator":"critical"},"components":[{"id":"actions","name":"Actions","status":"major_outage"},{"id":"pjmpxvq2cmr2","name":"Copilot","status":"operational"},{"id":"cnnb39dkkk82","name":"Model Providers","status":"operational"}],"incidents":[{"name":"Actions outage","status":"investigating","impact":"critical","components":[{"id":"actions"}]}]}"#
+                .utf8)
+        let scoped = TokenMonitorServiceStatusStore.summarize(provider: .copilot, data: unrelatedOutage, checkedAt: now)
+        expect(
+            scoped?.state == .operational && scoped?.incidentCount == 0 && scoped?.componentIssues.isEmpty == true,
+            "Unrelated GitHub outages do not mark Copilot unavailable")
+        let copilotOutage = Data(
+            #"{"status":{"indicator":"none"},"components":[{"id":"pjmpxvq2cmr2","name":"Copilot","status":"operational"},{"id":"cnnb39dkkk82","name":"Model Providers","status":"operational"}],"incidents":[{"name":"Copilot incident","status":"investigating","impact":"major","components":[{"id":"pjmpxvq2cmr2"}]}]}"#
+                .utf8)
+        let affected = TokenMonitorServiceStatusStore.summarize(provider: .copilot, data: copilotOutage, checkedAt: now)
+        expect(
+            affected?.state == .outage && affected?.incidentTitle == "Copilot incident",
+            "A Copilot incident raises scoped status before components update")
+        expect(
+            TokenMonitorServiceStatusStore.summarize(provider: .copilot, data: healthy, checkedAt: now) == nil,
+            "Missing Copilot components remain unknown instead of falsely healthy")
     }
 
     private static func verifyStatusRetainsLastGood(expect: Expect) async {

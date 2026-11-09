@@ -252,6 +252,8 @@ final class MessageChannelsController: ObservableObject {
     // A credential read is a separate lifecycle from outbound delivery. Content
     // option edits invalidate sends, but must not strand the one pending read.
     private var credentialLoadGenerations: [MessageChannelKind: UUID] = [:]
+    private let credentialRetries = Dictionary(uniqueKeysWithValues: MessageChannelKind.allCases.map { ($0, MessageCredentialRetry()) })
+    private let personalPersistenceRetry = MessageCredentialRetry()
     private var tasks: [MessageChannelKind: [UUID: Task<Void, Never>]] = [:]
     private var trackedSends: [MessageChannelKind: Set<UUID>] = [:]
     private var completionObservers: [MessageChannelKind: FeishuTaskCompletionObserver] = [:]
@@ -413,7 +415,8 @@ final class MessageChannelsController: ObservableObject {
         for kind in MessageChannelKind.allCases { invalidate(kind) }
     }
 
-    private func invalidate(_ kind: MessageChannelKind, preservingCredentialLoad: Bool = false) {
+    private func invalidate(_ kind: MessageChannelKind, preservingCredentialLoad: Bool = false, preservingCredentialRetry: Bool = false) {
+        if !preservingCredentialLoad && !preservingCredentialRetry { credentialRetries[kind]?.cancel() }
         if explicitTest?.kind == kind { explicitTest = nil }
         if !preservingCredentialLoad { credentialLoadGenerations.removeValue(forKey: kind) }
         revisions[kind] = UUID()
@@ -453,7 +456,8 @@ final class MessageChannelsController: ObservableObject {
             guard !personalReconnectInFlight else { return }
             stopPersonalConnection()
         }
-        invalidate(kind)
+        credentialRetries[kind]?.cancel(resetDelay: false)
+        invalidate(kind, preservingCredentialRetry: true)
         let loadGeneration = UUID()
         credentialLoadGenerations[kind] = loadGeneration
         storage.load(kind) { [weak self] result in
@@ -465,11 +469,22 @@ final class MessageChannelsController: ObservableObject {
         }
     }
 
-    /// Opening the settings sheet is the explicit authorization action.
+    /// Opening settings only retries a silent read; only Restore may show UI.
     @discardableResult
     func openPersonalWeChatSettings() -> UUID? {
-        guard personalWeChatEnabled, !personalWeChatConnected, !personalWeChatBindingMissing else { return nil }
-        return restorePersonalWeChatConnection()
+        guard running, personalWeChatEnabled, !personalWeChatConnected, !personalWeChatBindingMissing,
+            !personalReconnectInFlight, credentialLoadGenerations[.personalWeChat] == nil
+        else { return nil }
+        load(.personalWeChat)
+        return nil
+    }
+
+    func recoverSavedConnections() {
+        guard running, !credentialWriteInFlight else { return }
+        for kind in MessageChannelKind.allCases where isEnabled(kind) && credentials[kind] == nil && credentialLoadGenerations[kind] == nil {
+            if kind == .personalWeChat && (personalWeChatBindingMissing || personalReconnectInFlight) { continue }
+            load(kind)
+        }
     }
 
     /// Restores the saved binding without requesting a QR or writing a credential.
@@ -497,6 +512,7 @@ final class MessageChannelsController: ObservableObject {
     private func applyStoredCredential(_ result: Result<MessageChannelCredential?, FeishuWebhookError>, for kind: MessageChannelKind) {
         switch result {
         case .success(let credential):
+            credentialRetries[kind]?.cancel()
             credentials[kind] = credential
             if kind == .personalWeChat { refreshPersonalChatAuthorization() }
             setPhase(credential == nil ? .needsSetup : .pendingVerification, for: kind)
@@ -527,10 +543,19 @@ final class MessageChannelsController: ObservableObject {
                 personalWeChatConnected = false
                 personalWeChatHasContext = false
                 personalWeChatBindingMissing = false
+                personalWeChatNeedsAuthorization = false
                 if case .keychainAuthorizationRequired = error { personalWeChatNeedsAuthorization = true }
                 setPersonalStatus(Self.credentialStatus(error, for: kind))
             } else {
                 statusText = Self.credentialStatus(error, for: kind)
+            }
+            if running, isEnabled(kind) {
+                credentialRetries[kind]?.retry(after: error) { [weak self] in
+                    guard let self, self.running, self.isEnabled(kind), self.credentials[kind] == nil,
+                        !self.credentialWriteInFlight, self.credentialLoadGenerations[kind] == nil
+                    else { return }
+                    self.load(kind)
+                }
             }
         }
     }
@@ -551,9 +576,9 @@ final class MessageChannelsController: ObservableObject {
         case .keychainAuthorizationRequired:
             return language.text("\(name)连接需要钥匙串授权，请点击“恢复连接”并允许访问。", "\(name) needs Keychain permission. Choose Restore connection and allow access.")
         case .keychainTimedOut:
-            return language.text("读取\(name)连接超时，请重试恢复连接；已保存的绑定未删除。", "Reading the \(name) connection timed out. Retry restoring it; the saved binding was not deleted.")
+            return language.text("读取\(name)连接超时，将自动重试；已保存的绑定未删除。", "Reading the \(name) connection timed out. Retrying automatically; the saved binding was not deleted.")
         case .keychainBusy:
-            return language.text("\(name)连接仍在等待系统响应，请稍后重试。", "\(name) is still waiting for the system. Try again shortly.")
+            return language.text("\(name)连接仍在等待系统响应，将自动重试。", "\(name) is still waiting for the system. Retrying automatically.")
         case .keychain(let code):
             return language.text("无法读取\(name)已保存的连接（\(code)），请重试恢复连接。", "Could not read the saved \(name) connection (\(code)). Retry restoring it.")
         default:
@@ -832,6 +857,7 @@ final class MessageChannelsController: ObservableObject {
     }
 
     private func stopPersonalConnection() {
+        personalPersistenceRetry.cancel()
         cancelPersonalBotTasks()
         personalMessagesNotBefore = .distantFuture
         personalConnectionEpoch = UUID()
@@ -1135,9 +1161,19 @@ final class MessageChannelsController: ObservableObject {
                 self.credentials[.personalWeChat]?.target == credential.target,
                 self.credentials[.personalWeChat]?.personalBinding == credential.personalBinding
             else { return }
-            if case .failure = result {
+            switch result {
+            case .success:
+                self.personalPersistenceRetry.cancel()
+            case .failure(let error):
                 self.setPersonalStatus(
-                    WidgetLanguage.storedOrAutomatic().text("会话只在本次运行中可用；钥匙串未保存更新。", "The session is available for this run; the Keychain update was not saved."))
+                    WidgetLanguage.storedOrAutomatic().text(
+                        "会话更新尚未保存，将自动重试；当前连接继续可用。", "The session update is not saved yet. Retrying automatically; the current connection remains available."))
+                self.personalPersistenceRetry.retry(after: error) { [weak self] in
+                    guard let self, self.running, self.personalWeChatEnabled, self.personalConnectionEpoch == epoch,
+                        let latest = self.credentials[.personalWeChat], latest.secret == credential.secret, latest.target == credential.target
+                    else { return }
+                    self.persistPersonalPollingCredential(latest, epoch: epoch)
+                }
             }
         }
     }

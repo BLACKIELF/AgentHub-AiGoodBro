@@ -1,0 +1,92 @@
+{
+  "architecture": "aarch64-apple-darwin",
+  "baseCommit": "fa5f0c13324838d1a988fda317597f9b90da7ad0",
+  "binaryBytes": 18651296,
+  "binarySHA256": "5a5e66b0db6deea3234e4f2e793ad975b2e606c3c76f7c8c09f64eea24a6e7f8",
+  "build": {
+    "jobs": 2,
+    "locked": true,
+    "offline": true,
+    "pathRemap": "task root to /aigoodbro-build",
+    "profile": "release",
+    "target": "aarch64-apple-darwin"
+  },
+  "compatibilityNotes": [
+    "Pinned fork Cursor sync fetches the full history and has no upstream incremental merge path; that unrelated newer functionality was not added.",
+    "When multiple identified events share one fallback identity, legacy id-less rows use the upstream deterministic event-id choice; actual provenance is ambiguous.",
+    "Equal token and cost snapshots prefer provider-reported cost to preserve an explicit free marker."
+  ],
+  "evidenceSHA256": {
+    "archiveRegression": "5c1611df1c597bd276114069cd776c3505eb66101f908928aaa76c5c8c0035db",
+    "buildLog": "c5563ab7e8a530ff684f68b26f5a65d3b8a73037db6f7efe59ac19a4868a6692",
+    "costTieNegative": "84dadb7555521921868b9f0fa5e98f7532af9086de201e5bfae44de1cc2d7e24",
+    "negative": "247d2797102db87c938f2db651e8cafb9439ae742e058bed75c772234935fe0a",
+    "scannerRegression": "c29f26eef89338ce80b15a47dd4373f8bf8d7f3e953fb62ad4ebefec5ad4bb5d"
+  },
+  "patchReplay": "all five changed pinned-source files reproduced byte-for-byte",
+  "patchSHA256": "a5c09f55a7e70f167e4a48b793a169043fdc45c946773360b4e2739cdff5f52d",
+  "privacy": {
+    "jsonOutputsRecursivelyChecked": 32,
+    "network": "pricing cache only; no credential inputs",
+    "realAccountsRead": false,
+    "realHistoryScanned": false,
+    "syntheticOnly": true,
+    "taskVolumePathAbsentFromBinary": true,
+    "userHomePathAbsentFromBinary": true
+  },
+  "pullRequests": [
+    1439,
+    1453,
+    1456,
+    1527,
+    1531,
+    1544,
+    1550
+  ],
+  "rustVersion": "1.98.0",
+  "scannerRegression": {
+    "archiveCases": 3,
+    "archiveDecodedBytes": 269484619,
+    "baselineCases": 6,
+    "casesTotal": 29,
+    "cursorFreeCost": "unknown versus explicit zero with ordinary cached pricing in both row orders",
+    "history": "two distinct UTC dates with costs",
+    "newBinaryCases": 23,
+    "qwenCustomPricing": "paid and explicit-free",
+    "sourceFiltering": "other synthetic client present",
+    "sourceMigration": "old binary creates cached entries; new binary reparses unchanged source; warm hashes stable"
+  },
+  "schemaVersion": 1,
+  "sourceArchiveSHA256": "5f7fcc2872b40d61319ef88a847c9ef4bb0ef240cfd16139a4fa65de03f47503",
+  "sourceDeltaFrom1026": [
+    {
+      "afterSHA256": "c35fc8d06c8217a023dd0cd5de346561b0338328fddb1c3110131ac4221b799f",
+      "beforeSHA256": "3567760d42a6421eb3ca6ee5574f34b4a9b8c65a8528fd89a1e66186e0b89469",
+      "path": "crates/tokscale-core/src/message_cache.rs"
+    },
+    {
+      "afterSHA256": "b156541b8aa326e8f2e57e0ae3c924814958af0f80f618259c942e73bc86ade9",
+      "beforeSHA256": "b079c9685654c4b51fff0db967773fbb71f6e5da360058714d47f39e6f02e2a3",
+      "path": "crates/tokscale-core/src/sessions/cursor.rs"
+    },
+    {
+      "afterSHA256": "046cb8d275bbc090534ffa1c22b06dbbba338b0dc2d9a1bba9ebc33b5fbc2026",
+      "beforeSHA256": "b46139466a6250ebc3d212639da3589f1a1c2519b3de5fc219f3b3c950f574e1",
+      "path": "crates/tokscale-core/src/sessions/qwen.rs"
+    }
+  ],
+  "sourceInputs": 797,
+  "sourceInventorySHA256": "5f9c2d938d7df0167cbe316f5bd3c9cba8991994283119f517faf029ef5e3054",
+  "status": "component_validated_not_installed",
+  "testLimitations": [
+    "No real account or history scan, installed app, live provider, packaging, distribution or user-device acceptance.",
+    "Native 32 MiB transport boundary was preserved by leaving its code unchanged; it was not re-exercised in this component-only run."
+  ],
+  "unitTests": {
+    "cacheVersions": 19,
+    "codex": 130,
+    "cursor": 28,
+    "failed": 0,
+    "qwen": 24
+  }
+}
