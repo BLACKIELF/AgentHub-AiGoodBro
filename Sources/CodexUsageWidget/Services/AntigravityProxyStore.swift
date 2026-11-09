@@ -10,6 +10,9 @@ import Security
 final class AntigravityProxyStore: ObservableObject {
     static let shared = AntigravityProxyStore()
     static let defaultPort = 18_081
+    // Joint snapshot JSON budget, matching the helper. Commands, credentials
+    // and persisted authorization records retain their existing 1 MiB limit.
+    nonisolated private static let maximumSnapshotBytes = 32 * 1_048_576
 
     @Published private(set) var accounts: [AntigravityProxyAccount] = []
     @Published private(set) var phase: AntigravityProxyPhase = .stopped
@@ -63,9 +66,9 @@ final class AntigravityProxyStore: ObservableObject {
         do {
             let file = directory.appendingPathComponent("accounts-v1.json")
             let saved = FileManager.default.fileExists(atPath: file.path) ? try Self.readRecords(directory) : []
-            records = saved
+            records = saved.map(\.withoutRuntimeQuota)
             accounts = saved.map { row in
-                var row = row
+                var row = row.withoutRuntimeQuota
                 row.inFlight = 0
                 row.state = row.enabled ? .checking : .disabled
                 row.models = []
@@ -93,11 +96,34 @@ final class AntigravityProxyStore: ObservableObject {
                     let credential = try? JSONDecoder().decode(AntigravityProxyCredential.self, from: data),
                     credential.isValid, credential.provider == row.provider, credential.accountID == row.id, credential.generation == row.generation
                 else { throw AntigravityProxyFailure.keychain }
-                bootstrapAccounts.append([
+                var saved: [String: Any] = [
                     "credential": try JSONSerialization.jsonObject(with: JSONEncoder().encode(credential)),
                     "enabled": row.enabled, "concurrencyLimit": row.concurrencyLimit,
                     "cooldownUntil": row.cooldownEpoch ?? 0,
-                ])
+                ]
+                if row.provider == .xai,
+                    let data = try credentialStore.read(Self.pendingCredentialKey(row.id, row.generation))
+                {
+                    guard data.count <= 65_536,
+                        let pending = try? JSONDecoder().decode(AntigravityProxyPendingRefresh.self, from: data)
+                    else { throw AntigravityProxyFailure.keychain }
+                    if pending.credential == credential {
+                        // Active commit survived a lost ACK or failed cleanup.
+                        // The old pending record must not replace this credential.
+                        do {
+                            try credentialStore.remove(Self.pendingCredentialKey(row.id, row.generation))
+                            guard try credentialStore.read(Self.pendingCredentialKey(row.id, row.generation)) == nil else { throw AntigravityProxyFailure.keychain }
+                        } catch {
+                            // The helper must finish this cleanup before another
+                            // rotation; otherwise the old item blocks a new stage.
+                            saved["pendingRefresh"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(pending))
+                        }
+                    } else {
+                        guard pending.isValid(for: credential) else { throw AntigravityProxyFailure.invalidData }
+                        saved["pendingRefresh"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(pending))
+                    }
+                }
+                bootstrapAccounts.append(saved)
             }
             let child = Process()
             let stdin = Pipe()
@@ -124,18 +150,27 @@ final class AntigravityProxyStore: ObservableObject {
             let output = stdout.fileHandleForReading
             outputTask = Task.detached { [weak self] in
                 var pending = Data()
-                while !Task.isCancelled {
+                var scannedCount = 0
+                readLoop: while !Task.isCancelled {
                     guard let bytes = await Self.readOutput(output) else { break }
                     pending.append(bytes)
-                    if pending.count > 1_048_576 {
+                    while let newline = pending.dropFirst(scannedCount).firstIndex(of: 10) {
+                        guard pending.distance(from: pending.startIndex, to: newline) <= Self.maximumSnapshotBytes else {
+                            await self?.invalidOutput(run: run)
+                            break readLoop
+                        }
+                        let line = Data(pending.prefix(upTo: newline))
+                        pending.removeSubrange(...newline)
+                        scannedCount = 0
+                        await self?.consume(line, run: run)
+                    }
+                    // Completed frames are consumed before checking leftovers,
+                    // so several valid frames in one read cannot trip the cap.
+                    guard pending.count <= Self.maximumSnapshotBytes else {
                         await self?.invalidOutput(run: run)
                         break
                     }
-                    while let newline = pending.firstIndex(of: 10) {
-                        let line = Data(pending.prefix(upTo: newline))
-                        pending.removeSubrange(...newline)
-                        await self?.consume(line, run: run)
-                    }
+                    scannedCount = pending.count
                 }
                 try? output.close()
             }
@@ -178,7 +213,7 @@ final class AntigravityProxyStore: ObservableObject {
         providerModels = [:]
         availableProviders = []
         accounts = records.map { row in
-            var row = row
+            var row = row.withoutRuntimeQuota
             row.inFlight = 0
             row.state = row.enabled ? .checking : .disabled
             row.models = []
@@ -198,6 +233,7 @@ final class AntigravityProxyStore: ObservableObject {
         signInPending = false
         authorizationUserCode = nil
         outputTask?.cancel()
+        accounts = accounts.map(\.withoutRuntimeQuota)
         phase = .failed
         // EOF does not wait for space in a full helper input pipe. The exact
         // held Process objects include a previous child already terminating.
@@ -271,6 +307,7 @@ final class AntigravityProxyStore: ObservableObject {
             if process != nil { try send(["command": "remove", "accountID": id, "generation": row.generation]) }
             // Keep the identity available for retry until secret deletion succeeds.
             // Keychain removal is idempotent if metadata persistence then fails.
+            try credentialStore.remove(Self.pendingCredentialKey(id, row.generation))
             try credentialStore.remove(Self.credentialKey(id, row.generation))
             try saveRecords(remaining)
             records = remaining
@@ -312,6 +349,8 @@ final class AntigravityProxyStore: ObservableObject {
     private func consume(_ line: Data, run: UUID) {
         guard runID == run else { return }
         guard let event = try? JSONDecoder().decode(AntigravityProxyEvent.self, from: line),
+            line.count <= Self.maximumSnapshotBytes,
+            event.event == "snapshot" || line.count < 1_048_576,
             ["ready", "snapshot", "open_browser", "persist_credential", "auth_result", "error"].contains(event.event)
         else {
             invalidOutput(run: run)
@@ -327,7 +366,9 @@ final class AntigravityProxyStore: ObservableObject {
                 !revoked.contains(Self.credentialKey(credential.accountID, credential.generation))
             {
                 do {
-                    try persistCredential(credential, purpose: event.purpose, session: event.sessionID)
+                    try persistCredential(
+                        credential, purpose: event.purpose, session: event.sessionID,
+                        expectedFingerprint: event.expectedCredentialFingerprint)
                     accepted = true
                 } catch { issue = Self.message(for: error) }
                 try? send(["command": "persist_result", "requestID": request, "ok": accepted])
@@ -354,7 +395,7 @@ final class AntigravityProxyStore: ObservableObject {
                 return
             }
             var changed = false
-            accounts = rows.compactMap { row in
+            let updatedAccounts = rows.compactMap { row -> AntigravityProxyAccount? in
                 guard let index = records.firstIndex(where: { $0.id == row.id && $0.generation == row.generation && $0.provider == row.provider }) else { return nil }
                 var row = row
                 row.enabled = records[index].enabled
@@ -364,6 +405,7 @@ final class AntigravityProxyStore: ObservableObject {
                 }
                 return row
             }
+            if accounts != updatedAccounts { accounts = updatedAccounts }
             var catalogs: [AntigravityProxyProvider: [String]] = [:]
             let reported = event.providerModels ?? ["antigravity": event.models ?? []]
             for (name, values) in reported {
@@ -378,8 +420,16 @@ final class AntigravityProxyStore: ObservableObject {
                 }
                 catalogs[provider] = Array(Set(values)).sorted()
             }
-            providerModels = catalogs
-            models = catalogs[.antigravity] ?? []
+            let legacyModels = catalogs[.antigravity] ?? []
+            if models != legacyModels {
+                providerModels = catalogs
+                models = legacyModels
+            } else if providerModels != catalogs {
+                // Other providers can change while the legacy Antigravity
+                // catalog stays equal. Their views still need one notification.
+                objectWillChange.send()
+                providerModels = catalogs
+            }
             if changed {
                 do { try saveRecords(records) } catch {
                     stop()
@@ -433,15 +483,58 @@ final class AntigravityProxyStore: ObservableObject {
             signInCancelling = false
             authorizationUserCode = nil
             signInPending = false
+        case "error" where event.code == "snapshot_too_large":
+            invalidOutput(run: run)
         default:
             issue = "多平台代理未能完成操作，请停止后重试。"
         }
     }
 
-    private func persistCredential(_ credential: AntigravityProxyCredential, purpose: String?, session: String?) throws {
+    private func persistCredential(
+        _ credential: AntigravityProxyCredential, purpose: String?, session: String?, expectedFingerprint: String?
+    ) throws {
         let key = Self.credentialKey(credential.accountID, credential.generation)
-        if purpose == "refresh" {
+        if purpose == "refresh_pending" || purpose == "refresh_promote" || purpose == "refresh_discard" {
+            guard records.contains(where: { $0.id == credential.accountID && $0.generation == credential.generation && $0.provider == .xai }),
+                let expectedFingerprint, expectedFingerprint.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil,
+                let activeData = try credentialStore.read(key), activeData.count <= 65_536,
+                let active = try? JSONDecoder().decode(AntigravityProxyCredential.self, from: activeData), active.isValid
+            else { throw AntigravityProxyFailure.invalidData }
+            let pending = AntigravityProxyPendingRefresh(baseFingerprint: expectedFingerprint, credential: credential)
+            let pendingKey = Self.pendingCredentialKey(credential.accountID, credential.generation)
+            let existingData = try credentialStore.read(pendingKey)
+            let existing: AntigravityProxyPendingRefresh?
+            if let existingData {
+                guard existingData.count <= 65_536,
+                    let decoded = try? JSONDecoder().decode(AntigravityProxyPendingRefresh.self, from: existingData)
+                else { throw AntigravityProxyFailure.invalidData }
+                existing = decoded
+            } else {
+                existing = nil
+            }
+            guard existing == nil || existing == pending else { throw AntigravityProxyFailure.invalidData }
+            if purpose == "refresh_pending" {
+                guard pending.isValid(for: active) else { throw AntigravityProxyFailure.invalidData }
+                let encoded = try JSONEncoder().encode(pending)
+                guard encoded.count <= 65_536 else { throw AntigravityProxyFailure.invalidData }
+                try credentialStore.save(encoded, account: pendingKey)
+                guard try credentialStore.read(pendingKey) == encoded else { throw AntigravityProxyFailure.keychain }
+            } else if purpose == "refresh_promote" {
+                guard existing == pending, pending.isValid(for: active) || active == credential else { throw AntigravityProxyFailure.invalidData }
+                let encoded = try JSONEncoder().encode(credential)
+                guard encoded.count <= 65_536 else { throw AntigravityProxyFailure.invalidData }
+                try credentialStore.save(encoded, account: key)
+                guard try credentialStore.read(key) == encoded else { throw AntigravityProxyFailure.keychain }
+            } else {
+                guard pending.isValid(for: active) || active == credential else { throw AntigravityProxyFailure.invalidData }
+                try credentialStore.remove(pendingKey)
+                guard try credentialStore.read(pendingKey) == nil else { throw AntigravityProxyFailure.keychain }
+            }
+        } else if purpose == "refresh" {
             guard records.contains(where: { $0.id == credential.accountID && $0.generation == credential.generation && $0.provider == credential.provider }) else {
+                throw AntigravityProxyFailure.invalidData
+            }
+            if credential.provider == .xai, try credentialStore.read(Self.pendingCredentialKey(credential.accountID, credential.generation)) != nil {
                 throw AntigravityProxyFailure.invalidData
             }
             try credentialStore.save(JSONEncoder().encode(credential), account: key)
@@ -550,7 +643,7 @@ final class AntigravityProxyStore: ObservableObject {
             let properties = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             guard properties.isRegularFile == true, properties.isSymbolicLink == false else { throw AntigravityProxyFailure.storage }
         }
-        let data = try JSONEncoder().encode(values)
+        let data = try JSONEncoder().encode(values.map(\.withoutRuntimeQuota))
         try data.write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
@@ -587,6 +680,7 @@ final class AntigravityProxyStore: ObservableObject {
     }
 
     private static func credentialKey(_ id: String, _ generation: String) -> String { "account.\(id).\(generation)" }
+    private static func pendingCredentialKey(_ id: String, _ generation: String) -> String { credentialKey(id, generation) + ".pending-refresh" }
 
     private static func randomKey() throws -> String {
         var bytes = [UInt8](repeating: 0, count: 32)

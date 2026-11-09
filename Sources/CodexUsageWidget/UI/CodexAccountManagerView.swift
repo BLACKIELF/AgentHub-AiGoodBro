@@ -1210,9 +1210,7 @@ struct CodexAccountManagerView: View {
     }
 
     private func openAccountsFromResetBanner() {
-        showingHome = true
-        professionalSection = .accounts
-        selectedLocalCLI = nil
+        openAccountManagement()
     }
 
     private var professionalTaskOverview: TaskOverviewPresentation {
@@ -4117,7 +4115,7 @@ struct CodexAccountMenuView: View {
             switch screen {
             case .overview: self = .home
             case .accounts: self = .accounts
-            case .runningTasks: self = .home
+            case .runningTasks: self = .runningTasks
             case .usageDetails: self = .usageDetails
             case .settings: self = .settings
             }
@@ -4265,7 +4263,7 @@ struct CodexAccountMenuView: View {
                             case .accounts:
                                 accounts
                             case .runningTasks:
-                                ScrollView(showsIndicators: true) { home }
+                                runningTasks
                             case .usageDetails:
                                 usageDetails
                             case .settings:
@@ -4490,7 +4488,7 @@ struct CodexAccountMenuView: View {
         switch screen {
         case .home: return text("总览", "Overview")
         case .accounts: return text("账号与额度", "Accounts & Quota")
-        case .runningTasks: return text("总览", "Overview")
+        case .runningTasks: return text("运行中任务", "Running tasks")
         case .usageDetails: return text("用量明细", "Usage Details")
         case .settings: return text("设置", "Settings")
         }
@@ -4753,7 +4751,7 @@ struct CodexAccountMenuView: View {
             )
             Text(
                 menuQuota.readSucceeded
-                    ? (selectedProfile?.lastSnapshot?.fetchedAt).map { text("更新于 ", "Updated ") + language.dateTime($0) }
+                    ? menuPresentation.quotaObservedAt(monitored: store.snapshot).map { text("更新于 ", "Updated ") + language.dateTime($0) }
                         ?? text("官方额度已连接", "Official quota connected")
                     : text("官方额度未知", "Official quota unknown")
             )
@@ -5552,6 +5550,7 @@ struct CodexAccountMenuView: View {
                         store.requestDesktopSwitch(with: profile.id, status: cliTaskStatus)
                     }
                     .buttonStyle(AccountGlassButtonStyle(tint: .accentColor, foreground: .white, compact: true))
+                    .disabled(store.isLaunchingCodex || store.isLoggingIn)
                     .help(
                         cliTaskStatus.blocksLocalCLI
                             ? (cliTaskStatus.blockingReason(language)
@@ -6299,7 +6298,7 @@ private struct ProfileRow: View {
                     .foregroundStyle(isCurrentCodexAccount ? FixedVisualPalette.statusSuccessForeground(colorScheme) : Color.primary)
                     .frame(width: 26, height: 26)
             }
-            .disabled(linkedAccountName != nil)
+            .disabled(linkedAccountName != nil || isLaunching || isLoggingIn)
             .help(language.text("切换到桌面", "Switch Desktop"))
             .accessibilityLabel(isCurrentCodexAccount ? language.text("当前桌面账号", "Current Desktop account") : language.text("切换到桌面", "Switch Desktop"))
             Menu {

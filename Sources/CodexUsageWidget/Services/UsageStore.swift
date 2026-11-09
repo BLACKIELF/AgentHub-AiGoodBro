@@ -26,6 +26,7 @@ final class UsageStore: ObservableObject {
         let sources: [TokenMonitorSource]
     }
     private var engineScanKey: StatisticsEngineScanKey?
+    private var engineLastGoodScanKey: StatisticsEngineScanKey?
     private var engineLocalSources: [TokenMonitorSource] = []
     private var statisticsIncludesManagedCodex = true
     @Published private(set) var engineLimitsByProfileID: [String: TokenMonitorResponse] = [:]
@@ -91,17 +92,24 @@ final class UsageStore: ObservableObject {
         statisticsEngineChoice = choice
         // Previous-mode values must not be aggregated with the newly selected authority.
         engineState = TokenMonitorEngineState()
+        engineLastGoodScanKey = nil
         engineLimitsByProfileID = [:]
         refreshStatisticsEngine()
         refresh(queueIfBusy: true)
     }
 
-    private func cancelStatisticsEngine() {
+    private func cancelStatisticsEngine(for key: StatisticsEngineScanKey? = nil) {
         engineGeneration.invalidate()
         engineCancellation?.cancel()
         engineCancellation = nil
         engineScanKey = nil
-        engineState.phase = .stopped
+        // A failed refresh may reuse history only from the same scan inputs.
+        if engineLastGoodScanKey != (key ?? currentStatisticsEngineScanKey()) {
+            engineLastGoodScanKey = nil
+            engineState = TokenMonitorEngineState(phase: .stopped)
+        } else {
+            engineState.phase = .stopped
+        }
     }
 
     private func currentStatisticsEngineScanKey() -> StatisticsEngineScanKey {
@@ -126,7 +134,7 @@ final class UsageStore: ObservableObject {
         {
             return
         }
-        cancelStatisticsEngine()
+        cancelStatisticsEngine(for: key)
         statisticsEngineChoice = key.choice
         guard key.choice == .upstream else {
             engineState = TokenMonitorEngineState(phase: key.choice == .custom ? .custom : .legacy)
@@ -166,6 +174,7 @@ final class UsageStore: ObservableObject {
                 self.engineScanKey = nil
                 switch result {
                 case .success(let prepared):
+                    self.engineLastGoodScanKey = key
                     self.engineState = prepared
                     if let response = prepared.lastGood {
                         self.updateTokenMonitorHubAfterLocalCollection(response)
@@ -356,7 +365,9 @@ final class UsageStore: ObservableObject {
     }
     @Published private(set) var taskFocusRequest: TaskFocusRequest?
     @Published private(set) var isTaskOverviewVisible = false
-    @Published private(set) var profiles: [CodexProfile]
+    @Published private(set) var profiles: [CodexProfile] {
+        didSet { scheduleResetCreditAutoReconciliation() }
+    }
     @Published private(set) var officialAccountsLifetimeTokens: Int64?
     @Published private(set) var localAllAgentsLifetimeTokens: Int64?
     @Published private(set) var selectedMonitorProfileID: String
@@ -432,6 +443,8 @@ final class UsageStore: ObservableObject {
     private var resetCreditAutoIdentityRetryAt: Date?
     private var resetCreditAutoTimer: Timer?
     private var resetCreditAutoPreferences = CodexResetCreditAutoPreferences()
+    private var saveResetCreditAutoPreferences: ((CodexResetCreditAutoPreferences) -> Bool)?
+    private var resetCreditAutoReconciliationScheduled = false
     private var resetCreditAutoTask: Task<Void, Never>?
     private var resetCreditAutoAdmission: CodexResetCreditAutoAdmission?
     private var resetCreditAutoIdentity: (profileID: String, accountID: String, home: URL)?
@@ -440,18 +453,54 @@ final class UsageStore: ObservableObject {
     @MainActor private lazy var resetCreditAutoController = CodexResetCreditController()
     @Published private(set) var resetCreditAutoStatus: String?
 
-    func configureResetCreditAuto(_ preferences: CodexResetCreditAutoPreferences) {
+    func configureResetCreditAuto(
+        _ preferences: CodexResetCreditAutoPreferences,
+        save: ((CodexResetCreditAutoPreferences) -> Bool)? = nil
+    ) {
         guard !isPreview else { return }
+        if let save { saveResetCreditAutoPreferences = save }
         resetCreditAutoAdmission?.cancel()
-        resetCreditAutoPreferences = preferences.isValid ? preferences : .init()
+        resetCreditAutoPreferences = preferences.isValid ? preferences : .failClosed
         resetCreditAutoTimer?.invalidate()
         resetCreditAutoTimer = nil
+        scheduleResetCreditAutoReconciliation()
         guard hasStarted, preferences.isValid, !preferences.authorizedAccounts.isEmpty else { return }
         let timer = Timer(timeInterval: 60, repeats: true) { [weak self] _ in self?.checkResetCreditAuto() }
         timer.tolerance = 3
         RunLoop.main.add(timer, forMode: .common)
         resetCreditAutoTimer = timer
         checkResetCreditAuto()
+    }
+
+    private func scheduleResetCreditAutoReconciliation() {
+        guard !isPreview, saveResetCreditAutoPreferences != nil, !resetCreditAutoReconciliationScheduled else { return }
+        resetCreditAutoReconciliationScheduled = true
+        // @Published emits before its setter finishes. Defer the persistence
+        // callback so a nested publication cannot overwrite the saved decision.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.resetCreditAutoReconciliationScheduled = false
+            self.reconcileResetCreditAutoPreferences()
+        }
+    }
+
+    private func reconcileResetCreditAutoPreferences() {
+        guard !isPreview, profileStore.hasReliableProfileList, profiles == profileStore.profiles,
+            let saveResetCreditAutoPreferences
+        else { return }
+        var next = resetCreditAutoPreferences
+        var identities: [String: String] = [:]
+        for profile in profiles {
+            guard let snapshot = profile.lastSnapshot, snapshot.accountType?.lowercased() == "chatgpt",
+                snapshot.quotaReadSucceeded == true, profile.lastQuotaReadFailureAt == nil,
+                let accountID = snapshot.accountID, !accountID.isEmpty
+            else { continue }
+            identities[profile.id] = accountID
+        }
+        next.reconcile(profileIDs: Set(profiles.map(\.id)), verifiedAccountIDs: identities)
+        // Saving publishes back through AppSettings and reconfigures with the
+        // saved value. Do not grant locally or restart the timer a second time.
+        if next != resetCreditAutoPreferences { _ = saveResetCreditAutoPreferences(next) }
     }
 
     private func checkResetCreditAuto() {
@@ -473,7 +522,9 @@ final class UsageStore: ObservableObject {
                 resetCreditAutoPreferences.permits(profileID: profile.id, accountID: account),
                 profile.lastSnapshot?.quotaReadSucceeded == true, profile.lastQuotaReadFailureAt == nil
             else { return false }
-            return (profile.lastSnapshot?.resetCreditExpiries ?? []).contains { $0 > now && $0.timeIntervalSince(now) <= resetCreditAutoPreferences.leadSeconds }
+            return (profile.lastSnapshot?.resetCreditExpiries ?? []).contains {
+                resetCreditAutoPreferences.isWithinExpiryWindow($0, now: now)
+            }
         }
         guard !candidates.isEmpty else { return }
         resetCreditAutoTask = Task { @MainActor [weak self] in
@@ -1371,17 +1422,11 @@ final class UsageStore: ObservableObject {
     }
 
     func availableResetCredits(for profile: CodexProfile) -> Int? {
-        if profile.id == selectedMonitorProfileID {
-            return snapshot.credits?.resetCredits
-        }
-        return profile.lastSnapshot?.availableResetCredits
+        profile.lastSnapshot?.availableResetCredits
     }
 
     func resetCreditExpiries(for profile: CodexProfile) -> [Date] {
-        if profile.id == selectedMonitorProfileID {
-            return snapshot.credits?.resetCreditExpiries?.sorted() ?? []
-        }
-        return profile.lastSnapshot?.resetCreditExpiries ?? []
+        profile.lastSnapshot?.resetCreditExpiries?.sorted() ?? []
     }
 
     func adjustResetCount(for profile: CodexProfile, delta: Int) {
@@ -2749,9 +2794,12 @@ final class UsageStore: ObservableObject {
 
     /// A user action in the embedded upstream UI enters the same guarded
     /// transaction as the native workspace. The helper never writes system auth.
-    func requestTokenMonitorDesktopSwitch(accountKey: String) async -> String? {
+    func requestTokenMonitorDesktopSwitch(accountKey: String, vendorAccountID: String) async -> String? {
+        // Only host-owned row IDs encode a profile ID. Older vendor IDs are
+        // opaque correlation aliases, not workspace or credential identities.
         guard !isLaunchingCodex, !isLoggingIn, !isAccountSwitchTransactionActive,
             let profile = TokenMonitorHostIdentity.uniqueProfile(for: accountKey, profiles: profiles),
+            !vendorAccountID.hasPrefix("aigoodbro-") || vendorAccountID == "aigoodbro-" + profile.id,
             let identity = CodexOfficialProfileReader.credentialIdentity(codexHomeURL: profile.codexHomeURL),
             profile.matchesRecordedCredential(identity),
             TokenMonitorHostIdentity.accountKey(email: identity.email, accountID: identity.accountID) == accountKey
@@ -4594,18 +4642,27 @@ final class UsageStore: ObservableObject {
 
     func sendFeishuTestNotification() {
         guard feishuWebhookConfigured,
-            let source = selectedMonitorProfile.flatMap(maskedAccount(for:))
+            let profile = selectedMonitorProfile,
+            let source = maskedAccount(for: profile)
         else {
             feishuNotificationMessage = WidgetLanguage.storedOrAutomatic().text("请先保存有效的飞书 Webhook", "Save a valid Feishu webhook first.")
             return
         }
-        let quota = AutomaticSwitchQuotaState(snapshot: snapshot)
+        let identity = profile.lastSnapshot.flatMap { saved -> CodexCredentialIdentity? in
+            guard let email = saved.email, !email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                let accountID = saved.accountID, !accountID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return nil }
+            return CodexCredentialIdentity(email: email, accountID: accountID)
+        }
+        let factsSnapshot = CodexSwitchSnapshotProjection.snapshot(
+            saved: identity == nil ? nil : profile.lastSnapshot, identity: identity)
+        let quota = AutomaticSwitchQuotaState(snapshot: factsSnapshot)
         sendFeishuNotification(
             event: .test,
             source: source,
             target: nil,
             quota: quota,
-            factsSnapshot: snapshot,
+            factsSnapshot: factsSnapshot,
             eventID: UUID(),
             isTest: true
         )
@@ -7183,6 +7240,9 @@ final class UsageStore: ObservableObject {
         fullRefreshCancellation = nil
         identityRefreshCancellation?.cancel()
         identityRefreshCancellation = nil
+        refreshGeneration &+= 1
+        isRefreshing = false
+        hasPendingRefresh = false
         cancelStatisticsEngine()
         engineQuotaCancellation?.cancel()
         engineQuotaCancellation = nil

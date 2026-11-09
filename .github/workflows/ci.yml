@@ -53,6 +53,20 @@ jobs:
         run: make lint
       - name: Validate isolated provider client launchers
         run: python3 scripts/test-provider-client-launcher.py
+      - name: Validate model quota display and local privacy tools
+        run: |
+          python3 -B tests/test_provider_model_quota.py
+          python3 -B tests/test_provider_launch_library.py
+          python3 -B -m unittest tests.test_privacy_preview tests.test_agent_cli_snapshot tests.test_antigravity_cli_quota tests.test_local_cli_model_availability
+          python3 -B scripts/test-token-monitor-host-switch.py
+          python3 -B scripts/test-portable-first-run.py
+          python3 -B scripts/test-profile-identity-observations.py
+          python3 -B scripts/test-statistics-engine-cache.py
+          python3 -B scripts/test-profile-credit-display.py
+          python3 -B tests/test_ccswitch_optional_usage.py
+          python3 -B scripts/test-switch-journal-preservation.py
+          python3 -B scripts/test-credential-switch-reads.py
+          python3 -B scripts/test-afunix-websocket-lifecycle.py
       - name: Validate rendered local proxy policy editor
         run: python3 scripts/test-local-proxy-policy-editor.py
       - name: Validate native local proxy host with synthetic accounts
@@ -126,7 +140,7 @@ jobs:
       - name: Check shared dispatch coordination and Swift interoperability
         run: |
           python3 scripts/next_dispatch_preflight.py --self-test
-          python3 -m unittest tests.test_dispatch_activity tests.test_dispatch_invocation tests.test_dispatch_profile_workflow tests.test_cancel_authority tests.test_agent_cli
+          python3 -m unittest tests.test_dispatch_activity tests.test_dispatch_invocation tests.test_dispatch_profile_workflow tests.test_cancel_authority tests.test_agent_cli tests.test_agent_cli_grok
           python3 tests/test-dispatch-activity-interop.py
           python3 scripts/test-message-channels.py
           bash scripts/test-grok-reset-cards.sh

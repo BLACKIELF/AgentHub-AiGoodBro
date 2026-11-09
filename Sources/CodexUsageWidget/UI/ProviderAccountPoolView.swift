@@ -33,6 +33,7 @@ struct ProviderAccountPoolView: View {
     @State private var detail: AntigravityProxyAccount?
     @State private var removing: AntigravityProxyAccount?
     @State private var confirmingStop = false
+    @State private var showingModels = false
     @State private var localIssue: String?
     private var language: WidgetLanguage { settings.language }
     private var accounts: [AntigravityProxyAccount] { isPreview ? [] : pool.accounts.filter { $0.provider == provider } }
@@ -43,6 +44,7 @@ struct ProviderAccountPoolView: View {
                 Label(language.text("网页授权账号池", "Authorized account pool"), systemImage: "person.2")
                     .font(.headline)
                 Spacer()
+                Button(language.text("模型与方案", "Models & presets")) { showingModels = true }
                 if pool.phase == .running {
                     Button {
                         pool.refreshStatus()
@@ -61,18 +63,6 @@ struct ProviderAccountPoolView: View {
                     Text(endpoint.absoluteString).font(.caption.monospaced()).textSelection(.enabled)
                     Spacer()
                     Button(language.text("复制连接配置", "Copy connection config")) { copyConnection(endpoint) }
-                    Menu(language.text("接入 Codex CLI", "Connect Codex CLI")) {
-                        ForEach(pool.models(for: provider), id: \.self) { model in
-                            Button(model) { launchCodex(model: model) }
-                        }
-                    }.disabled(pool.models(for: provider).isEmpty)
-                    if provider != .antigravity {
-                        Menu(language.text("接入 \(provider.title) CLI", "Connect \(provider.title) CLI")) {
-                            ForEach(pool.models(for: provider), id: \.self) { model in
-                                Button(model) { launchCodex(model: model, native: true) }
-                            }
-                        }.disabled(pool.models(for: provider).isEmpty)
-                    }
                     if provider == .antigravity {
                         Button(language.text("接入 agy CLI", "Connect agy CLI")) { launchAgy() }
                             .disabled(accounts.filter { $0.enabled && $0.state == .ready }.isEmpty)
@@ -108,22 +98,14 @@ struct ProviderAccountPoolView: View {
             if let issue = localIssue ?? pool.issue { Text(issue).font(.caption).foregroundStyle(.orange) }
         }
         .disabled(isPreview)
+        .sheet(isPresented: $showingModels) {
+            ProviderModelPickerView(pool: pool, settings: settings, provider: provider) { model, native in
+                DispatchQueue.main.async { launchCodex(model: model, native: native) }
+            }
+        }
         .sheet(isPresented: $addingAccount) { authorizationSheet }
         .sheet(item: $detail) { account in
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text(account.maskedIdentity).font(.headline)
-                    Spacer()
-                    Button(language.text("关闭", "Close")) { detail = nil }
-                }
-                Text(stateTitle(account.state))
-                Text(language.text("并发 \(account.inFlight)/\(account.concurrencyLimit)", "Concurrency \(account.inFlight)/\(account.concurrencyLimit)"))
-                if let until = account.cooldownUntil { Text(until, style: .relative) }
-                Text(language.text("模型目录", "Model catalog")).font(.headline)
-                if account.models.isEmpty { Text(language.text("尚未确认模型目录", "Model catalog not confirmed")) }
-                ScrollView { Text(account.models.joined(separator: "\n")).font(.caption.monospaced()).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-                    .frame(maxHeight: 300)
-            }.padding(24).frame(width: 480)
+            accountDetail(account)
         }
         .alert(language.text("移除这个授权账号？", "Remove this authorized account?"), isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } })) {
             Button(language.text("取消", "Cancel"), role: .cancel) { removing = nil }
@@ -143,7 +125,11 @@ struct ProviderAccountPoolView: View {
     }
 
     private func accountCard(_ account: AntigravityProxyAccount) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let now = Date()
+        let models = ProviderModelQuotaPresentation.models(account: account, isRunning: pool.phase == .running, now: now)
+        let shared = ProviderModelQuotaPresentation.shared(account: account, isRunning: pool.phase == .running, now: now)
+        let summary = ProviderModelQuotaPresentation.summary(account: account, models: models, shared: shared)
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Image(systemName: "person.crop.circle").font(.title2)
                 Text(account.maskedIdentity).font(.headline).lineLimit(1).help(account.maskedIdentity)
@@ -177,8 +163,46 @@ struct ProviderAccountPoolView: View {
                     "Confirmed models \(account.models.count) · Concurrency \(account.inFlight)/\(account.concurrencyLimit)")
             )
             .font(.caption).foregroundStyle(.secondary)
+            ProviderAccountModelQuotaView(
+                models: models, summary: summary, language: language,
+                compact: density == .compact, quotaIssue: account.quotaIssue)
         }.padding(density == .compact ? 12 : 16).frame(maxWidth: .infinity, alignment: .leading)
             .background(WorkspaceGlassSurface(cornerRadius: 16))
+    }
+
+    @ViewBuilder
+    private func accountDetail(_ selected: AntigravityProxyAccount) -> some View {
+        // The sheet's selection is identity only; readings keep following the
+        // live account, including refresh, removal and authorization changes.
+        if let account = accounts.first(where: { $0.id == selected.id && $0.generation == selected.generation }) {
+            let now = Date()
+            let models = ProviderModelQuotaPresentation.models(account: account, isRunning: pool.phase == .running, now: now)
+            let shared = ProviderModelQuotaPresentation.shared(account: account, isRunning: pool.phase == .running, now: now)
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text(account.maskedIdentity).font(.headline)
+                    Spacer()
+                    Button(language.text("关闭", "Close")) { detail = nil }
+                }
+                Text(pool.phase == .running ? stateTitle(account.state) : language.text("反代未开启", "Proxy stopped"))
+                Text(language.text("并发 \(account.inFlight)/\(account.concurrencyLimit)", "Concurrency \(account.inFlight)/\(account.concurrencyLimit)"))
+                if let until = account.cooldownUntil { Text(until, style: .relative) }
+                Text(language.text("模型与额度", "Models & allowances")).font(.headline)
+                ScrollView {
+                    ProviderAccountModelQuotaView(
+                        models: models, summary: ProviderModelQuotaPresentation.summary(account: account, models: models, shared: shared),
+                        language: language, quotaIssue: account.quotaIssue)
+                }.frame(maxHeight: 470)
+                if let observed = account.modelDetailsObservedAt {
+                    Text(language.text("读取于 ", "Read at ") + language.dateTime(observed)).font(.caption).foregroundStyle(.secondary)
+                }
+            }.padding(24).frame(width: 520)
+        } else {
+            VStack(spacing: 12) {
+                Text(language.text("该账号已变更，请重新打开详情。", "This account changed. Reopen its details."))
+                Button(language.text("关闭", "Close")) { detail = nil }
+            }.padding(24)
+        }
     }
 
     private var authorizationSheet: some View {

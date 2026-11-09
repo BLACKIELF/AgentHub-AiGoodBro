@@ -405,15 +405,13 @@ enum LocalCLIModelDispatch {
         if now > latest.validUntil { return .expired }
         if !LocalCLIModelEvidenceContract.minimumReturnHolds(latest) { return .invalidMinimumReturn }
         if LocalCLIModelEvidenceContract.resolvedStatus(latest, now: now) != .passed { return .invalidEvidence }
-        if let expectedHash = binding.executableHash.flatMap(LocalCLIModelEvidenceContract.executableHash),
-            expectedHash != latest.executableHash
-        {
-            return .environmentMismatch
+        if let rawHash = binding.executableHash {
+            guard let expectedHash = LocalCLIModelEvidenceContract.executableHash(rawHash) else { return .invalidEvidence }
+            if expectedHash != latest.executableHash { return .environmentMismatch }
         }
-        if let expectedVersion = binding.cliVersion.flatMap(LocalCLIModelEvidenceContract.cliVersion),
-            expectedVersion != latest.cliVersion
-        {
-            return .environmentMismatch
+        if let rawVersion = binding.cliVersion {
+            guard let expectedVersion = LocalCLIModelEvidenceContract.cliVersion(rawVersion) else { return .invalidEvidence }
+            if expectedVersion != latest.cliVersion { return .environmentMismatch }
         }
         return .eligible
     }

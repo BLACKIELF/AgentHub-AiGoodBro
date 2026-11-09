@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Actual manual notice callback/queue/transport admission, synthetic dependencies only."""
 from pathlib import Path
+import argparse
 import hashlib
 import json
 import subprocess
@@ -11,8 +12,16 @@ BASE = ROOT / 'Sources/CodexUsageWidget'
 
 def declaration(source, needle):
     start = source.index(needle)
+    body_start = start
+    if 'func ' in needle:
+        depth = 0
+        for index in range(source.index('(', start), len(source)):
+            depth += (source[index] == '(') - (source[index] == ')')
+            if depth == 0:
+                body_start = index + 1
+                break
     depth = 0
-    for index in range(source.index('{', start), len(source)):
+    for index in range(source.index('{', body_start), len(source)):
         depth += (source[index] == '{') - (source[index] == '}')
         if depth == 0:
             return source[start:index + 1]
@@ -22,12 +31,21 @@ paths = [BASE / p for p in ['Services/UsageStore.swift', 'Services/FeishuWebhook
     'Domain/CodexResetNotice.swift', 'Domain/UsageModels.swift', 'Domain/MessageChannel.swift',
     'Services/CodexResetNoticeDeliveryStore.swift']] + [ROOT / 'tests/ManualResetNoticeFixture.swift']
 frozen = {p: p.read_text() for p in paths}
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--feishu-source', type=Path, help='Offline baseline source for a negative control')
+args = parser.parse_args()
+if args.feishu_source is not None:
+    frozen[BASE / 'Services/FeishuWebhookService.swift'] = args.feishu_source.read_text()
 usage = frozen[BASE / 'Services/UsageStore.swift']
 feishu = frozen[BASE / 'Services/FeishuWebhookService.swift']
 channel = frozen[BASE / 'Domain/MessageChannel.swift']
 methods = '\n'.join(declaration(usage, n) for n in ['    func recordManualResetConfirmed(',
     '    private func manualResetSource(', '    private func queuePendingManualResetNotices('])
-sender = declaration(feishu, '    func sendManualReset(') + '\n' + declaration(feishu, '    private func send(\n        body: Data,')
+sender = '\n'.join(declaration(feishu, needle) for needle in [
+    '    func sendManualReset(', '    func send(\n        _ notification:',
+    '    func sendPublicResetAnnouncement(', '    func sendPublicResetForecast(',
+    '    func sendTaskCompletion(', '    private func send(\n        _ notification:',
+    '    private func send(\n        body: Data,'])
 # Verify that the normal comparison is passed to other channels first, while
 # only the Feishu DTO receives the optional narrow suppression flag.
 routing = declaration(usage, '    private func sendFeishuNotification(')

@@ -21,8 +21,8 @@ RUNTIME=ROOT/'Sources/CodexUsageWidget/Domain/TaskRuntime.swift'
 VIEW=ROOT/'Sources/CodexUsageWidget/UI/ResetCreditAutoSettingsView.swift'
 STUBS=r'''import Foundation
 import Combine
-struct CodexAccountSnapshot { var accountID:String?; var quotaReadSucceeded:Bool? = true; var resetCreditExpiries:[Date]? = nil; var accountType:String? = "chatgpt" }
-struct CodexProfile { let id:String; var lastSnapshot:CodexAccountSnapshot?; var lastQuotaReadFailureAt:Date? = nil; var isSystemProfile = false; var homeOverride:URL? = nil
+struct CodexAccountSnapshot:Equatable { var accountID:String?; var quotaReadSucceeded:Bool? = true; var resetCreditExpiries:[Date]? = nil; var accountType:String? = "chatgpt" }
+struct CodexProfile:Equatable { let id:String; var lastSnapshot:CodexAccountSnapshot?; var lastQuotaReadFailureAt:Date? = nil; var isSystemProfile = false; var homeOverride:URL? = nil
  var recordedAccountKey:String { "synthetic-"+(lastSnapshot?.accountID ?? id) }; var codexHomeURL:URL { homeOverride ?? URL(fileURLWithPath:ProcessInfo.processInfo.environment["RESET_AUTO_TEST_ROOT"]!).appendingPathComponent("home-"+id) } }
 enum AccountDisplay { static func profileName(_ profile:CodexProfile)->String { "Synthetic account" }; static func numberedName(_ profile:CodexProfile,allProfiles:[CodexProfile])->String { profile.id } }
 enum WidgetLanguage { case fixture; static func storedOrAutomatic()->Self { .fixture }; func text(_ zh:String,_ en:String)->String { en } }
@@ -31,7 +31,7 @@ struct HubAccountTaskStatus { let phase:HubAccountTaskPhase; let updatedAt:Date?
 enum HubWarmUpAvailability { case idle }
 enum TaskColumnKind { case active,done,pending }
 enum NSRunningApplication { static func runningApplications(withBundleIdentifier:String)->[String] { [] } }
-final class FixtureProfileStore { var profiles:[CodexProfile]=[] }
+final class FixtureProfileStore { var profiles:[CodexProfile]=[]; var hasReliableProfileList=true }
 enum DispatchCodeCatalog { static func reload() {} }
 enum HubConsoleModel { static func warmUpAvailability(for:String,excludingLocalLease:String?) async ->HubWarmUpAvailability { fatalError("Uninjected Hub call forbidden") } }
 struct RuntimeLoadContext { static func live(codexHomeDirectory:URL)->Self { Self() } }
@@ -65,6 +65,8 @@ def main():
    target=folder/path.name;target.write_text(text);frozen.append(target)
   usage=snapshots[USAGE].decode();reader=snapshots[READER].decode()
   runner=declaration(usage,'private func checkResetCreditAuto()').replace('private func','func',1)
+  configuration='\n'.join(declaration(usage,n).replace('private func','func',1) for n in ['func configureResetCreditAuto(', 'private func scheduleResetCreditAutoReconciliation()', 'private func reconcileResetCreditAutoPreferences()'])
+  profile_property=declaration(usage,'@Published private(set) var profiles:').replace('@Published private(set)', '@Published',1).replace('[CodexProfile] {','[CodexProfile] = [] {',1)
   # Keep the actual identity invalidation block, omitting unrelated UI/statistics work.
   sync=declaration(usage,'private func syncProfiles()')
   sync=sync[:sync.index('        if !isPreview { DispatchCodeCatalog.reload() }')].replace('private func syncProfiles()', 'func syncAutomaticIdentity()',1)+'        profiles = profileStore.profiles\n    }'
@@ -95,10 +97,11 @@ def main():
 var resetCreditAutoTask:Task<Void,Never>?; var isLaunchingCodex=false; var isLoggingIn=false; var isAccountSwitchTransactionActive=false
  var resetCreditAutoOriginIdentity:(profileID:String,accountID:String,home:URL)?; var resetCreditAutoDesktopAccountID:String?
  let profileStore=FixtureProfileStore()
-var profiles:[CodexProfile]=[]; var resetCreditAutoPreferences=CodexResetCreditAutoPreferences(); var aliases:[String:String]=[:]
+var resetCreditAutoPreferences=CodexResetCreditAutoPreferences(); var aliases:[String:String]=[:]
+ var saveResetCreditAutoPreferences:((CodexResetCreditAutoPreferences)->Bool)?; var resetCreditAutoReconciliationScheduled=false; var resetCreditAutoTimer:Timer?
  var resetCreditAutoAdmission:CodexResetCreditAutoAdmission?; var resetCreditAutoIdentity:(profileID:String,accountID:String,home:URL)?; var resetCreditAutoController=FixtureAutoController(); var resetCreditAutoStatus:String?
  func accountTaskAlias(for profile:CodexProfile)->String? { aliases[profile.id] }; func refreshProfile(_ id:String) {}
-''' + task_property + '\n' + runner + '\n' + sync + r'''
+''' + profile_property + '\n' + configuration + '\n' + task_property + '\n' + runner + '\n' + sync + r'''
 }
 final class ReaderSendFixture {
  enum Stage { case awaitingInitialize,awaitingConsume };var stage=Stage.awaitingInitialize

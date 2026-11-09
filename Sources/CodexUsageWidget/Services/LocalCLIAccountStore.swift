@@ -1155,7 +1155,9 @@ final class LocalCLIAccountStore: ObservableObject {
                 // retain the old account's quota or derived identity on this signal.
                 self.quotaCredentialVersions.removeValue(forKey: profile.id)
             }
-            if !credentialSourceChanged, result.state != .available, result.state != .needsLogin, previous?.state == .available {
+            if !credentialSourceChanged, result.quotaObservations.isEmpty,
+                result.state != .available, result.state != .needsLogin, previous?.state == .available
+            {
                 // Keep the quota and its original timestamp while separately
                 // publishing why the latest refresh is waiting.
                 var snapshot = previous!

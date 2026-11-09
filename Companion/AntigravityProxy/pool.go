@@ -11,11 +11,13 @@ import (
 const catalogTTL = 15 * time.Minute
 
 type poolEntry struct {
-	view        accountView
-	credential  credential
-	catalogAt   time.Time
-	preparation sync.Mutex
-	requests    map[string]context.CancelFunc
+	view             accountView
+	credential       credential
+	pendingRefresh   *pendingRefresh
+	pendingPersisted bool
+	catalogAt        time.Time
+	preparation      sync.Mutex
+	requests         map[string]context.CancelFunc
 }
 
 type pool struct {
@@ -45,7 +47,8 @@ func (p *pool) add(a savedAccount) bool {
 		view: accountView{ID: a.Credential.AccountID, Provider: a.Credential.Provider, Generation: a.Credential.Generation,
 			MaskedIdentity: a.Credential.MaskedIdentity, Enabled: a.Enabled,
 			ConcurrencyLimit: a.ConcurrencyLimit, CooldownUntil: a.CooldownUntil, State: "checking", Models: []string{}},
-		credential: a.Credential, requests: map[string]context.CancelFunc{},
+		credential: a.Credential, pendingRefresh: a.PendingRefresh, pendingPersisted: a.PendingRefresh != nil,
+		requests: map[string]context.CancelFunc{},
 	}
 	p.order = append(p.order, a.Credential.AccountID)
 	return true
@@ -99,6 +102,21 @@ func (p *pool) snapshotsForProvider(provider string) ([]accountView, []string) {
 		}
 		v := e.view
 		v.Models = append([]string{}, e.view.Models...)
+		v.ModelDetails = append([]modelDetail(nil), e.view.ModelDetails...)
+		v.SharedWindows = append([]quotaWindow(nil), e.view.SharedWindows...)
+		freshQuota := !e.catalogAt.IsZero() && now.Sub(e.catalogAt) <= catalogTTL && v.LastError == ""
+		for i := range v.ModelDetails {
+			if !freshQuota || (v.ModelDetails[i].ResetAt != nil && *v.ModelDetails[i].ResetAt <= now.Unix()) {
+				v.ModelDetails[i].RemainingFraction = nil
+			}
+		}
+		for i := range v.SharedWindows {
+			if !freshQuota || (v.SharedWindows[i].ResetAt != nil && *v.SharedWindows[i].ResetAt <= now.Unix()) {
+				v.SharedWindows[i].RemainingFraction = nil
+				v.SharedWindows[i].RemainingAmount = nil
+				v.SharedWindows[i].TotalAmount = nil
+			}
+		}
 		switch {
 		case !v.Enabled:
 			v.State = "disabled"
@@ -263,7 +281,48 @@ func (p *pool) prepare(ctx context.Context, e *poolEntry, b backend, persist fun
 		return credential{}, context.Canceled
 	}
 	c := e.credential
+	pending := e.pendingRefresh
 	p.mu.Unlock()
+	if pending != nil && pending.matchesPromoted(c) {
+		// Finish an earlier committed promotion before any further rotation.
+		// A cleanup outage cannot justify sending an expired access token.
+		if err := p.discardPendingRefresh(ctx, e, pending, persist); err != nil {
+			if !p.current(e) {
+				return credential{}, context.Canceled
+			}
+			if c.ExpiresAt <= p.now().Add(10*time.Minute).Unix() {
+				return credential{}, err
+			}
+			return c, nil
+		}
+		pending = nil
+	}
+	if pending != nil || (c.Provider == "xai" && c.ExpiresAt <= p.now().Add(10*time.Minute).Unix()) {
+		staged, ok := b.(stagedRefreshBackend)
+		if !ok {
+			return credential{}, errors.New("staged_refresh_unavailable")
+		}
+		if pending == nil {
+			candidate, err := staged.beginRefresh(ctx, c)
+			if err != nil {
+				return credential{}, err
+			}
+			pending = &pendingRefresh{BaseFingerprint: c.fingerprint(), Credential: candidate}
+			if !pending.validFor(c) {
+				return credential{}, errors.New("invalid_refresh")
+			}
+			p.mu.Lock()
+			if p.entries[e.view.ID] != e {
+				p.mu.Unlock()
+				return credential{}, context.Canceled
+			}
+			// Keep the candidate in memory if Keychain is temporarily unavailable.
+			// It is never returned as active, and survives restart only after ACK.
+			e.pendingRefresh, e.pendingPersisted = pending, false
+			p.mu.Unlock()
+		}
+		return p.preparePendingRefresh(ctx, e, c, pending, staged, persist)
+	}
 	if c.ExpiresAt <= p.now().Add(10*time.Minute).Unix() {
 		updated, err := b.refresh(ctx, c)
 		if err != nil {
@@ -293,6 +352,75 @@ func (p *pool) prepare(ctx context.Context, e *poolEntry, b backend, persist fun
 	return c, nil
 }
 
+// Called only while e.preparation is held. Neither a model catalog nor an
+// inference request receives the candidate before identity and durable ACK.
+func (p *pool) preparePendingRefresh(ctx context.Context, e *poolEntry, active credential, pending *pendingRefresh,
+	b stagedRefreshBackend, persist func(context.Context, credential, string, string) error) (credential, error) {
+	if !p.current(e) {
+		return credential{}, context.Canceled
+	}
+	if !pending.validFor(active) {
+		return credential{}, errors.New("invalid_pending_refresh")
+	}
+	if !e.pendingPersisted {
+		if err := persist(ctx, pending.Credential, "refresh_pending", pending.BaseFingerprint); err != nil {
+			return credential{}, err
+		}
+		if !p.current(e) {
+			return credential{}, context.Canceled
+		}
+		e.pendingPersisted = true
+	}
+	verified, err := b.verifyRefresh(ctx, pending.Credential)
+	if err != nil {
+		if statusCode(err) == 401 || statusCode(err) == 403 {
+			_ = p.discardPendingRefresh(ctx, e, pending, persist)
+		}
+		return credential{}, err
+	}
+	if verified != pending.Credential || !pending.validFor(active) {
+		return credential{}, errors.New("invalid_refresh")
+	}
+	if verified.ExpiresAt <= p.now().Unix() {
+		return credential{}, upstreamError{status: 401}
+	}
+	if !p.current(e) {
+		return credential{}, context.Canceled
+	}
+	if err := persist(ctx, verified, "refresh_promote", pending.BaseFingerprint); err != nil {
+		return credential{}, err
+	}
+	p.mu.Lock()
+	if p.entries[e.view.ID] != e {
+		p.mu.Unlock()
+		return credential{}, context.Canceled
+	}
+	e.credential = verified
+	p.mu.Unlock()
+	_ = p.discardPendingRefresh(ctx, e, pending, persist)
+	if !p.current(e) {
+		return credential{}, context.Canceled
+	}
+	return verified, nil
+}
+
+func (p *pool) discardPendingRefresh(ctx context.Context, e *poolEntry, pending *pendingRefresh,
+	persist func(context.Context, credential, string, string) error) error {
+	if !p.current(e) {
+		return context.Canceled
+	}
+	if err := persist(ctx, pending.Credential, "refresh_discard", pending.BaseFingerprint); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.entries[e.view.ID] == e && e.pendingRefresh == pending {
+		e.pendingRefresh, e.pendingPersisted = nil, false
+		return nil
+	}
+	return context.Canceled
+}
+
 func (p *pool) refreshCatalogs(ctx context.Context, b backend, persist func(context.Context, credential, string, string) error) {
 	p.mu.Lock()
 	entries := make([]*poolEntry, 0, len(p.entries))
@@ -309,19 +437,32 @@ func (p *pool) refreshCatalogs(ctx context.Context, b backend, persist func(cont
 			for e := range jobs {
 				callCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 				c, err := p.prepare(callCtx, e, b, persist)
-				var models []string
+				prepared := err == nil
+				var catalog modelCatalog
 				if err == nil {
-					models, err = b.models(callCtx, c)
+					catalog, err = readModelCatalog(callCtx, b, c)
 				}
 				cancel()
 				p.mu.Lock()
-				if p.entries[e.view.ID] == e {
+				// Cancelled work has no new observation. A catalog response also
+				// belongs to the credential it used, and cannot undo a concurrent
+				// request's authoritative revocation of the same pool entry.
+				if p.entries[e.view.ID] == e && !errors.Is(err, context.Canceled) &&
+					(!prepared || e.credential == c) && (err != nil || e.view.State != "reauth_required") {
 					if err == nil {
-						e.view.Models = models
+						e.view.Models = catalog.Models
+						e.view.ModelDetails = catalog.Details
+						e.view.SharedWindows = catalog.SharedWindows
+						e.view.QuotaIssue = catalog.QuotaIssue
 						e.catalogAt = p.now()
+						e.view.ModelDetailsUpdatedAt = e.catalogAt.Unix()
 						e.view.State = "ready"
 						e.view.LastError = ""
 					} else {
+						for i := range e.view.ModelDetails {
+							e.view.ModelDetails[i].RemainingFraction = nil
+						}
+						e.view.SharedWindows = nil
 						p.recordErrorLocked(e, err)
 					}
 				}

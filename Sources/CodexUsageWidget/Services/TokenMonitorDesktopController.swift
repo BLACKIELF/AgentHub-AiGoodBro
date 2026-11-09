@@ -169,9 +169,8 @@ final class TokenMonitorDesktopController: ObservableObject {
         if result.pending == true {
             let now = ProcessInfo.processInfo.systemUptime
             if homeUsagePendingSince == nil { homeUsagePendingSince = now }
-            if homeUsage.phase != .unavailable {
-                homeUsage.phase = now - (homeUsagePendingSince ?? now) >= homePendingLimitSeconds ? .delayed : .pending
-            }
+            let nextPhase: HomeUsage.Phase = now - (homeUsagePendingSince ?? now) >= homePendingLimitSeconds ? .delayed : .pending
+            if homeUsage.phase != nextPhase { homeUsage.phase = nextPhase }
         } else if result.unchanged == true, result.revision == homeUsage.revision, homeUsage.dashboardJSON != nil {
             homeUsagePendingSince = nil
             if homeUsage.phase != .ready { homeUsage.phase = .ready }
@@ -460,15 +459,16 @@ final class TokenMonitorDesktopController: ObservableObject {
                 guard !Task.isCancelled, self.process === child, child.isRunning, !self.isShuttingDown else { return }
                 if reply?.ok == true, reply?.ready == true {
                     missed = 0
-                    self.isReady = true
-                    self.hasVisibleTray = reply?.trayVisible == true
+                    if !self.isReady { self.isReady = true }
+                    let trayVisible = reply?.trayVisible == true
+                    if self.hasVisibleTray != trayVisible { self.hasVisibleTray = trayVisible }
                     self.updateAllTimeUsage(reply)
                 } else {
                     self.updateTokenRate(nil)
                     missed += 1
                     if missed >= 3 {
-                        self.isReady = false
-                        self.hasVisibleTray = false
+                        if self.isReady { self.isReady = false }
+                        if self.hasVisibleTray { self.hasVisibleTray = false }
                         self.updateAllTimeUsage(nil)
                     }
                 }
@@ -538,13 +538,13 @@ final class TokenMonitorDesktopController: ObservableObject {
             !value.contextKey.isEmpty, value.contextKey.utf8.count <= 128,
             value.contextKey.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 })
         else { return nil }
-        let age = now.timeIntervalSince(value.sampledDate)
-        guard age.isFinite, age >= 0, age < 180, !value.idle || age >= 8 else { return nil }
         if let previous, previous.contextKey == value.contextKey,
             value.revision < previous.revision || value.sampledAt < previous.sampledAt
         {
-            return nil
+            return validatedTokenRate(previous, now: now)
         }
+        let age = now.timeIntervalSince(value.sampledDate)
+        guard age.isFinite, age >= 0, age < 180, !value.idle || age >= 8 else { return nil }
         return value
     }
 
@@ -611,17 +611,16 @@ private struct DesktopReply: Decodable, Sendable {
 
 private enum DesktopSocket {
     static func request(_ request: DesktopRequest, path: String, timeout: Double = 2) throws -> DesktopReply {
-        guard path.utf8.count < 104 else { throw DesktopError.unavailable }
+        guard path.utf8.count < 104, timeout.isFinite, timeout > 0 else { throw DesktopError.unavailable }
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        guard deadline.isFinite else { throw DesktopError.unavailable }
         let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { throw DesktopError.unavailable }
         defer { Darwin.close(descriptor) }
-        var duration = timeval(tv_sec: Int(timeout), tv_usec: Int32((timeout - floor(timeout)) * 1_000_000))
-        withUnsafePointer(to: &duration) {
-            _ = setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, $0, socklen_t(MemoryLayout<timeval>.size))
-            _ = setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, $0, socklen_t(MemoryLayout<timeval>.size))
-        }
+        let flags = fcntl(descriptor, F_GETFL)
+        guard flags >= 0, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0 else { throw DesktopError.unavailable }
         var one: Int32 = 1
-        _ = setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
+        guard setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size)) == 0 else { throw DesktopError.unavailable }
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
         address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
@@ -634,14 +633,21 @@ private enum DesktopSocket {
                 Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard connected == 0 else { throw DesktopError.unavailable }
+        if connected != 0 {
+            guard [EINPROGRESS, EALREADY, EWOULDBLOCK, EINTR].contains(errno) else { throw DesktopError.unavailable }
+            try waitUntilReady(descriptor, events: Int16(POLLOUT), deadline: deadline)
+            var error: Int32 = 0
+            var size = socklen_t(MemoryLayout<Int32>.size)
+            guard getsockopt(descriptor, SOL_SOCKET, SO_ERROR, &error, &size) == 0, error == 0 else { throw DesktopError.unavailable }
+        }
         var payload = try JSONEncoder().encode(request)
         payload.append(10)
         try payload.withUnsafeBytes { bytes in
             var offset = 0
             while offset < bytes.count {
+                try waitUntilReady(descriptor, events: Int16(POLLOUT), deadline: deadline)
                 let sent = Darwin.send(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset, 0)
-                if sent < 0, errno == EINTR { continue }
+                if sent < 0, errno == EINTR || errno == EWOULDBLOCK { continue }
                 guard sent > 0 else { throw DesktopError.unavailable }
                 offset += sent
             }
@@ -650,8 +656,9 @@ private enum DesktopSocket {
         let maximumBytes = request.cmd == "homeUsage" ? 18 * 1024 * 1024 : 16_384
         var buffer = [UInt8](repeating: 0, count: 16_384)
         while received.count < maximumBytes {
+            try waitUntilReady(descriptor, events: Int16(POLLIN), deadline: deadline)
             let count = Darwin.recv(descriptor, &buffer, buffer.count, 0)
-            if count < 0, errno == EINTR { continue }
+            if count < 0, errno == EINTR || errno == EWOULDBLOCK { continue }
             guard count > 0 else { throw DesktopError.unavailable }
             received.append(contentsOf: buffer.prefix(count))
             if let newline = received.firstIndex(of: 10) {
@@ -662,5 +669,20 @@ private enum DesktopSocket {
             }
         }
         throw DesktopError.invalidReply
+    }
+
+    /// One monotonic budget covers connect, every partial write and every
+    /// partial reply. Per-operation timeouts alone let a slow peer extend it.
+    private static func waitUntilReady(_ descriptor: Int32, events: Int16, deadline: TimeInterval) throws {
+        while true {
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else { throw DesktopError.unavailable }
+            var item = pollfd(fd: descriptor, events: events, revents: 0)
+            let milliseconds = Int32(min(Double(Int32.max), ceil(remaining * 1_000)))
+            let result = Darwin.poll(&item, 1, milliseconds)
+            if result < 0, errno == EINTR { continue }
+            guard result >= 0, item.revents & Int16(POLLNVAL) == 0 else { throw DesktopError.unavailable }
+            if result > 0 { return }
+        }
     }
 }

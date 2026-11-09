@@ -119,19 +119,19 @@ enum TokenMonitorNativePreviewRenderer {
     private static func renderProxyActivity(to directory: URL) throws {
         func rows(language: WidgetLanguage) -> [LocalProxyQueueRow] {
             [4, 8].map { number in
-            LocalProxyQueueRow(
-                id: "fixture-proxy-\(number)", label: language.text("示例 Plus 账号", "Demo Plus account"), accountNumber: number,
-                windows: [
-                    .init(id: "5h", remaining: number == 4 ? 89 : 100, resetsAt: referenceDate.addingTimeInterval(17_520)),
-                    .init(id: "7d", remaining: number == 4 ? 21 : 73, resetsAt: referenceDate.addingTimeInterval(360_000)),
-                ], creditBalance: .init(balance: number == 4 ? "2240.36" : "0", unlimited: false),
-                resetCardCount: number == 4 ? 3 : 2,
-                resetCardExpiries: number == 4
-                    ? [referenceDate.addingTimeInterval(259_200), referenceDate.addingTimeInterval(3_600), referenceDate.addingTimeInterval(86_400)]
-                    : [referenceDate.addingTimeInterval(172_800), referenceDate.addingTimeInterval(86_400)],
-                resetCardFetchedAt: referenceDate, resetCardReadSucceeded: true,
-                isEnabled: true, isPriority: false, isCurrent: true, quotaText: nil,
-                state: "current", cooldownUntil: nil, activeRequestCount: 1)
+                LocalProxyQueueRow(
+                    id: "fixture-proxy-\(number)", label: language.text("示例 Plus 账号", "Demo Plus account"), accountNumber: number,
+                    windows: [
+                        .init(id: "5h", remaining: number == 4 ? 89 : 100, resetsAt: referenceDate.addingTimeInterval(17_520)),
+                        .init(id: "7d", remaining: number == 4 ? 21 : 73, resetsAt: referenceDate.addingTimeInterval(360_000)),
+                    ], creditBalance: .init(balance: number == 4 ? "2240.36" : "0", unlimited: false),
+                    resetCardCount: number == 4 ? 3 : 2,
+                    resetCardExpiries: number == 4
+                        ? [referenceDate.addingTimeInterval(259_200), referenceDate.addingTimeInterval(3_600), referenceDate.addingTimeInterval(86_400)]
+                        : [referenceDate.addingTimeInterval(172_800), referenceDate.addingTimeInterval(86_400)],
+                    resetCardFetchedAt: referenceDate, resetCardReadSucceeded: true,
+                    isEnabled: true, isPriority: false, isCurrent: true, quotaText: nil,
+                    state: "current", cooldownUntil: nil, activeRequestCount: 1)
             }
         }
         let preferences = TokenMonitorEdgeDockPreferences(enabled: true, mode: .always, items: [.proxy()])
@@ -200,10 +200,11 @@ enum TokenMonitorNativePreviewRenderer {
                         value: .percentRemaining(100), resetLabel: "2026-11-14 13:00"),
                 ]
                 if hasTotal {
-                    metrics.append(.init(
-                        id: "monthly", name: locale.text("总额度（月）", "Total quota (month)"),
-                        sourceID: "kimi:fixture:monthly", fetchedAt: referenceDate,
-                        value: .percentRemaining(50.61), resetLabel: "2026-11-24 01:39"))
+                    metrics.append(
+                        .init(
+                            id: "monthly", name: locale.text("总额度（月）", "Total quota (month)"),
+                            sourceID: "kimi:fixture:monthly", fetchedAt: referenceDate,
+                            value: .percentRemaining(50.61), resetLabel: "2026-11-24 01:39"))
                 }
                 let account = TokenMonitorFloatingBubbleAccount(
                     providerID: "kimi", providerName: "Kimi Code", accountID: "fixture-kimi",

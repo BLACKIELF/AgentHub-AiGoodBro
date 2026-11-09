@@ -49,13 +49,33 @@ final class AFUnixWebSocket {
     typealias MessageHandler = (Data) -> Void
     typealias DisconnectHandler = () -> Void
 
+    // An operation retains the socket until its final syscall has returned.
+    // shutdown interrupts blocked IO; only the last owner closes the descriptor,
+    // so another file can never reuse its integer while an operation still holds it.
+    private final class Connection {
+        let descriptor: Int32
+
+        init(descriptor: Int32) { self.descriptor = descriptor }
+
+        deinit { Darwin.close(descriptor) }
+
+        func shutdown() { Darwin.shutdown(descriptor, SHUT_RDWR) }
+
+        func withDescriptor<T>(_ operation: (Int32) throws -> T) rethrows -> T {
+            try withExtendedLifetime(self) { try operation(descriptor) }
+        }
+    }
+
     private let socketPath: String
     private let maximumMessageBytes: Int
     private let callbackQueue: DispatchQueue
     private let readerQueue: DispatchQueue
     private let writeLock = NSLock()
     private let stateLock = NSLock()
-    private var descriptor: Int32 = -1
+    private var connection: Connection?
+    private var didStart = false
+    private var didClose = false
+    private var isReady = false
     private var didReportDisconnect = false
 
     init(socketPath: String, maximumMessageBytes: Int, callbackQueue: DispatchQueue) {
@@ -73,19 +93,31 @@ final class AFUnixWebSocket {
         onMessage: @escaping MessageHandler,
         onDisconnect: @escaping DisconnectHandler
     ) {
+        stateLock.lock()
+        guard !didStart else {
+            stateLock.unlock()
+            return
+        }
+        didStart = true
+        stateLock.unlock()
         readerQueue.async { [weak self] in
             guard let self else { return }
             do {
-                let descriptor = try self.openSocket()
-                self.setDescriptor(descriptor)
-                var buffer = try self.performHandshake(descriptor: descriptor)
-                debugLog("AFUnixWebSocket: handshake completed status=101 residualBytes=\(buffer.count)")
-                self.callbackQueue.async(execute: onReady)
-                try self.readFrames(
-                    descriptor: descriptor,
-                    buffer: &buffer,
-                    onMessage: onMessage
-                )
+                let connection = try self.openSocket()
+                try connection.withDescriptor { descriptor in
+                    var buffer = try self.performHandshake(descriptor: descriptor)
+                    guard self.markReady(connection) else { throw AFUnixWebSocketError.disconnected }
+                    debugLog("AFUnixWebSocket: handshake completed status=101 residualBytes=\(buffer.count)")
+                    self.callbackQueue.async { [weak self] in
+                        guard self?.isCurrentReadyConnection(connection) == true else { return }
+                        onReady()
+                    }
+                    try self.readFrames(
+                        descriptor: descriptor,
+                        buffer: &buffer,
+                        onMessage: onMessage
+                    )
+                }
             } catch {
                 debugLog("AFUnixWebSocket: connection ended")
             }
@@ -101,21 +133,23 @@ final class AFUnixWebSocket {
 
     func close() {
         stateLock.lock()
-        let descriptor = self.descriptor
-        self.descriptor = -1
+        didClose = true
+        isReady = false
+        let connection = self.connection
+        self.connection = nil
         stateLock.unlock()
-        guard descriptor >= 0 else { return }
-        Darwin.shutdown(descriptor, SHUT_RDWR)
-        Darwin.close(descriptor)
+        connection?.shutdown()
     }
 
-    private func openSocket() throws -> Int32 {
+    private func openSocket() throws -> Connection {
         let pathBytes = Array(socketPath.utf8CString)
         guard pathBytes.count <= MemoryLayout.size(ofValue: sockaddr_un().sun_path) else {
             throw AFUnixWebSocketError.invalidSocketPath
         }
         let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { throw AFUnixWebSocketError.socketFailed(errno) }
+        let connection = Connection(descriptor: descriptor)
+        guard installConnection(connection) else { throw AFUnixWebSocketError.disconnected }
         var noSigPipe: Int32 = 1
         _ = withUnsafePointer(to: &noSigPipe) {
             setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, $0, socklen_t(MemoryLayout<Int32>.size))
@@ -139,11 +173,11 @@ final class AFUnixWebSocket {
         }
         guard result == 0 else {
             let code = errno
-            Darwin.close(descriptor)
             throw AFUnixWebSocketError.connectFailed(code)
         }
+        guard isCurrentConnection(connection) else { throw AFUnixWebSocketError.disconnected }
         debugLog("AFUnixWebSocket: Unix socket connected")
-        return descriptor
+        return connection
     }
 
     private func performHandshake(descriptor: Int32) throws -> Data {
@@ -342,11 +376,11 @@ final class AFUnixWebSocket {
         writeLock.lock()
         defer { writeLock.unlock() }
         stateLock.lock()
-        let descriptor = self.descriptor
+        let connection = isReady ? self.connection : nil
         stateLock.unlock()
-        guard descriptor >= 0 else { return false }
+        guard let connection else { return false }
         do {
-            try writeAll(frame, descriptor: descriptor)
+            try connection.withDescriptor { try writeAll(frame, descriptor: $0) }
             return true
         } catch {
             debugLog("AFUnixWebSocket: send failed")
@@ -372,10 +406,32 @@ final class AFUnixWebSocket {
         }
     }
 
-    private func setDescriptor(_ descriptor: Int32) {
+    private func installConnection(_ connection: Connection) -> Bool {
         stateLock.lock()
-        self.descriptor = descriptor
-        stateLock.unlock()
+        defer { stateLock.unlock() }
+        guard !didClose, self.connection == nil else { return false }
+        self.connection = connection
+        return true
+    }
+
+    private func isCurrentConnection(_ connection: Connection) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return !didClose && self.connection === connection
+    }
+
+    private func markReady(_ connection: Connection) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        guard !didClose, self.connection === connection else { return false }
+        isReady = true
+        return true
+    }
+
+    private func isCurrentReadyConnection(_ connection: Connection) -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return !didClose && isReady && self.connection === connection
     }
 
     private func reportDisconnect(_ handler: @escaping DisconnectHandler) {

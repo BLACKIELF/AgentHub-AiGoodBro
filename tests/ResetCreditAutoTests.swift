@@ -1,6 +1,82 @@
 import Darwin
 import Foundation
 
+extension ResetCreditAutoTests {
+    @MainActor static func automaticPreferenceMigrationTests() throws {
+        func reopened(_ value: CodexResetCreditAutoPreferences) throws -> CodexResetCreditAutoPreferences {
+            CodexResetCreditAutoPreferences.load(try JSONEncoder().encode(value))
+        }
+        var fresh = CodexResetCreditAutoPreferences.load(nil)
+        expect(
+            fresh.shouldEnroll(profileID: "new") && !fresh.permits(profileID: "new", accountID: "synthetic-new"),
+            "absent preferences select defaults without granting an unverified identity")
+        fresh.reconcile(profileIDs: ["new", "pending"], verifiedAccountIDs: ["new": "synthetic-new"])
+        expect(fresh.permits(profileID: "new", accountID: "synthetic-new") && fresh.shouldEnroll(profileID: "pending"), "new default binds only supplied verified identities")
+        fresh = try reopened(fresh)
+        fresh.reconcile(profileIDs: ["new", "pending"], verifiedAccountIDs: ["new": "synthetic-changed", "pending": "synthetic-pending"])
+        expect(
+            !fresh.permits(profileID: "new", accountID: "synthetic-changed") && fresh.authorizedAccounts["new"] == DispatchActivityStore.hash("synthetic-new"),
+            "restart and identity rotation never rebind an existing grant")
+        expect(fresh.permits(profileID: "pending", accountID: "synthetic-pending"), "pending new account binds after its first successful verification")
+        fresh.setEnabled(false, profileID: "pending")
+        fresh = try reopened(fresh)
+        fresh.reconcile(profileIDs: ["new", "pending"], verifiedAccountIDs: ["pending": "synthetic-pending"])
+        expect(
+            !fresh.permits(profileID: "pending", accountID: "synthetic-pending") && fresh.disabledProfileIDs.contains("pending"),
+            "explicit off persists through restart and repeated reconciliation")
+        fresh.setEnabled(false, profileID: "new")
+        fresh.reconcile(profileIDs: ["new", "pending"], verifiedAccountIDs: ["new": "synthetic-changed"])
+        expect(!fresh.shouldEnroll(profileID: "new") && fresh.authorizedAccounts["new"] == nil, "clearing obsolete authorization remains off instead of inheriting the default")
+        fresh.setEnabled(true, profileID: "new", accountID: "synthetic-changed")
+        expect(
+            fresh.permits(profileID: "new", accountID: "synthetic-changed") && !fresh.disabledProfileIDs.contains("new"), "explicit verified enable can replace a disabled identity"
+        )
+
+        let legacyGrants = Dictionary(uniqueKeysWithValues: (0..<14).map { ("old-\($0)", DispatchActivityStore.hash("synthetic-\($0)")) })
+        let legacyBytes = try JSONSerialization.data(withJSONObject: ["authorizedAccounts": legacyGrants, "leadMinutes": 15])
+        var legacy = CodexResetCreditAutoPreferences.load(legacyBytes)
+        expect(legacy.legacyMigrationPending && !legacy.shouldEnroll(profileID: "old-off"), "legacy preferences wait for a complete profile migration")
+        legacy.reconcile(profileIDs: [], verifiedAccountIDs: [:])
+        expect(legacy.legacyMigrationPending, "empty profile list cannot complete legacy migration")
+        let oldIDs = Set(legacyGrants.keys).union(["old-off", "old-unverified"])
+        legacy.reconcile(profileIDs: oldIDs, verifiedAccountIDs: ["old-off": "synthetic-off"])
+        expect(legacy.authorizedAccounts == legacyGrants && legacy.leadMinutes == 15, "migration preserves all fourteen existing identity grants and custom lead")
+        expect(
+            !legacy.legacyMigrationPending && legacy.disabledProfileIDs == ["old-off", "old-unverified"], "legacy missing entries preserve off even without an identity snapshot")
+        legacy = try reopened(legacy)
+        legacy.reconcile(
+            profileIDs: oldIDs.union(["added"]), verifiedAccountIDs: ["old-off": "synthetic-off", "old-unverified": "synthetic-now-known", "added": "synthetic-added"])
+        expect(
+            !legacy.permits(profileID: "old-off", accountID: "synthetic-off") && !legacy.permits(profileID: "old-unverified", accountID: "synthetic-now-known"),
+            "legacy off entries remain off after new verification and restart")
+        expect(legacy.permits(profileID: "added", accountID: "synthetic-added"), "new account after legacy migration inherits the verified default")
+        let unchanged = legacy
+        legacy.reconcile(profileIDs: oldIDs.union(["added"]), verifiedAccountIDs: ["added": "synthetic-added"])
+        expect(legacy == unchanged, "repeated migration is idempotent")
+        legacy.disableAll(profileIDs: oldIDs.union(["added", "not-yet-verified"]))
+        legacy = try reopened(legacy)
+        legacy.reconcile(profileIDs: oldIDs.union(["added", "not-yet-verified"]), verifiedAccountIDs: ["added": "synthetic-added", "not-yet-verified": "synthetic-later"])
+        expect(legacy.authorizedAccounts.isEmpty && !legacy.shouldEnroll(profileID: "not-yet-verified"), "turn all off persists for both authorized and pending current accounts")
+
+        var emptyLegacy = CodexResetCreditAutoPreferences.load(Data(#"{"authorizedAccounts":{},"leadMinutes":30}"#.utf8))
+        emptyLegacy.reconcile(profileIDs: ["old"], verifiedAccountIDs: ["old": "synthetic-old"])
+        expect(emptyLegacy.disabledProfileIDs == ["old"] && emptyLegacy.authorizedAccounts.isEmpty, "legacy all-off setting does not become default-on")
+        let corruptValues: [Any] = [
+            false, Data("{broken".utf8), Data(#"{"authorizedAccounts":{}}"#.utf8),
+            Data(#"{"schemaVersion":2,"authorizedAccounts":{},"leadMinutes":30}"#.utf8),
+            Data(#"{"schemaVersion":99,"authorizedAccounts":{},"leadMinutes":30}"#.utf8),
+            Data(#"{"authorizedAccounts":{"bad":"not-a-hash"},"leadMinutes":30}"#.utf8),
+        ]
+        for (index, stored) in corruptValues.enumerated() {
+            var corrupt = CodexResetCreditAutoPreferences.load(stored)
+            corrupt.reconcile(profileIDs: ["new"], verifiedAccountIDs: ["new": "synthetic-new"])
+            expect(
+                !corrupt.automaticallyEnrollNewAccounts && corrupt.authorizedAccounts.isEmpty && !corrupt.legacyMigrationPending,
+                "corrupt preference case \(index) fails closed instead of using new defaults")
+        }
+    }
+}
+
 @main
 struct ResetCreditAutoTests {
     @MainActor static var checks = 0
@@ -59,8 +135,11 @@ struct ResetCreditAutoTests {
                 return true
             } && writes == 0, "revocation prevents consume write admission")
         expect(
-            CodexResetCreditAutoPreferences().authorizedAccounts.isEmpty && CodexResetCreditAutoPreferences().leadSeconds == 1800, "automation defaults off with thirty minute lead"
-        )
+            CodexResetCreditAutoPreferences().authorizedAccounts.isEmpty && CodexResetCreditAutoPreferences().automaticallyEnrollNewAccounts
+                && CodexResetCreditAutoPreferences().leadSeconds == 1800,
+            "new defaults await verified identity with thirty minute lead")
+        try automaticPreferenceMigrationTests()
+        await runAutomaticDefaultWiringTests()
         var preferences = CodexResetCreditAutoPreferences()
         preferences.authorizedAccounts["p"] = DispatchActivityStore.hash("a")
         expect(preferences.permits(profileID: "p", accountID: "a") && !preferences.permits(profileID: "p", accountID: "other"), "authorization does not survive identity changes")

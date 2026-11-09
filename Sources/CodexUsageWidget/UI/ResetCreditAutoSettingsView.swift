@@ -9,6 +9,8 @@ struct ResetCreditAutoSettingsView: View {
     let isPreview: Bool
     var focusedProfileID: String? = nil
     var onDone: () -> Void = {}
+    @State private var showsCustomLead = false
+    @State private var customLeadDraft = ""
 
     static func summary(profiles: [CodexProfile], preferences: CodexResetCreditAutoPreferences, language: WidgetLanguage) -> String {
         let count = Set(
@@ -48,9 +50,15 @@ struct ResetCreditAutoSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Text(
-                language.text(
-                    "默认关闭，逐个选择账号。应用须保持运行；仅空闲且身份核验通过时尝试，结果不确定时暂停并提示核对。",
-                    "Off by default. Choose accounts individually and keep the app running. Only idle, verified accounts are eligible; uncertain results pause for review.")
+                preferences.automaticallyEnrollNewAccounts
+                    ? language.text(
+                        "新账号默认开启，身份与额度核验成功后生效；保留旧账号的关闭选择。应用须保持运行，仅空闲时尝试；结果不确定时暂停并提示核对。",
+                        "New accounts default on after identity and limits verification. Existing off choices are kept. Keep the app running; only idle accounts are eligible, and uncertain results pause for review."
+                    )
+                    : language.text(
+                        "保存的自动设置无法安全读取，默认开启已暂停。请逐个核对并选择账号；身份、额度及空闲检查仍须通过。",
+                        "Saved automation settings could not be safely read, so default enrollment is paused. Review and select accounts individually; identity, limits and idle checks still apply."
+                    )
             )
             .font(.system(size: 12)).foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -58,14 +66,31 @@ struct ResetCreditAutoSettingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(language.text("提前使用时间", "Redeem before expiry"))
                         .font(.system(size: 13, weight: .medium))
-                    Text(language.text("默认 30 分钟 · 可选 1–1440", "Default: 30 min · Range: 1–1440"))
+                    Text(language.text("默认 30 分钟 · 所有已开启账号共用", "Default: 30 min · Shared by enabled accounts"))
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
-                Stepper(value: $preferences.leadMinutes, in: 1...1440) {
-                    Text(language.text("\(preferences.leadMinutes) 分钟", "\(preferences.leadMinutes) min"))
-                        .font(.system(size: 13, weight: .medium)).monospacedDigit()
-                        .frame(minWidth: 64, alignment: .trailing)
+                Menu {
+                    ForEach(CodexResetCreditAutoPreferences.leadPresets, id: \.self) { minutes in
+                        Button {
+                            preferences.leadMinutes = minutes
+                            showsCustomLead = false
+                        } label: {
+                            if minutes == preferences.leadMinutes {
+                                Label(leadTitle(minutes), systemImage: "checkmark")
+                            } else {
+                                Text(leadTitle(minutes))
+                            }
+                        }
+                    }
+                    Divider()
+                    Button(language.text("自定义…", "Custom…")) {
+                        customLeadDraft = String(preferences.leadMinutes)
+                        showsCustomLead = true
+                    }
+                } label: {
+                    Text(leadTitle(preferences.leadMinutes))
+                        .monospacedDigit()
                 }
                 .fixedSize()
                 .disabled(isPreview)
@@ -73,6 +98,21 @@ struct ResetCreditAutoSettingsView: View {
             }
             .padding(12)
             .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+            if showsCustomLead {
+                let minutes = Int(customLeadDraft.trimmingCharacters(in: .whitespacesAndNewlines))
+                HStack {
+                    TextField(language.text("分钟（3–1440）", "Minutes (3–1440)"), text: $customLeadDraft)
+                        .textFieldStyle(.roundedBorder)
+                    Button(language.text("应用", "Apply")) {
+                        guard let minutes, CodexResetCreditAutoPreferences.customLeadRange.contains(minutes) else { return }
+                        preferences.leadMinutes = minutes
+                        showsCustomLead = false
+                    }
+                    .disabled(minutes.map(CodexResetCreditAutoPreferences.customLeadRange.contains) != true)
+                    Button(language.text("取消", "Cancel")) { showsCustomLead = false }
+                }
+                .disabled(isPreview)
+            }
             if let status, !status.isEmpty {
                 Label(status, systemImage: "info.circle")
                     .font(.caption).foregroundStyle(WorkspaceStatusForeground.warning)
@@ -120,9 +160,9 @@ struct ResetCreditAutoSettingsView: View {
             HStack(spacing: 10) {
                 Button(language.text("全部关闭", "Turn all off")) {
                     guard !isPreview else { return }
-                    preferences.authorizedAccounts.removeAll()
+                    preferences.disableAll(profileIDs: Set(profiles.map(\.id)))
                 }
-                .disabled(isPreview || preferences.authorizedAccounts.isEmpty)
+                .disabled(isPreview || (preferences.authorizedAccounts.isEmpty && !profiles.contains(where: isSelected)))
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
                 Spacer(minLength: 0)
@@ -139,8 +179,21 @@ struct ResetCreditAutoSettingsView: View {
         .accessibilityIdentifier("next.reset-credit-auto.settings")
     }
 
+    private func leadTitle(_ minutes: Int) -> String {
+        if minutes >= 60 && minutes.isMultiple(of: 60) {
+            return language.text("\(minutes / 60) 小时", "\(minutes / 60) h")
+        }
+        return language.text("\(minutes) 分钟", "\(minutes) min")
+    }
+
     private func isEnabled(_ profile: CodexProfile) -> Bool {
         preferences.permits(profileID: profile.id, accountID: profile.lastSnapshot?.accountID ?? "")
+    }
+
+    private func isSelected(_ profile: CodexProfile) -> Bool {
+        isEnabled(profile)
+            || (preferences.shouldEnroll(profileID: profile.id)
+                && (profile.lastSnapshot?.accountType == nil || profile.lastSnapshot?.accountType?.lowercased() == "chatgpt"))
     }
 
     private func blockedReason(_ profile: CodexProfile) -> String? {
@@ -172,20 +225,41 @@ struct ResetCreditAutoSettingsView: View {
         return nil
     }
 
+    private func expiryStatus(_ profile: CodexProfile, now: Date) -> String {
+        let snapshot = profile.lastSnapshot
+        let dates = snapshot?.resetCreditExpiries ?? []
+        guard let expiry = ResetCardPresentation.orderedExpiries(dates, now: now).first,
+            expiry > now
+        else {
+            if snapshot?.availableResetCredits == 0, dates.isEmpty {
+                return language.text("当前记录无可用重置卡", "No available cards in the current record")
+            }
+            return language.text("当前记录没有未来的卡片到期时间", "No future card expiry in the current record")
+        }
+        let time = ResetCardPresentation.expiryText(expiry, timeZone: .current, language: language)
+        let expiryText = language.text("记录最早到期：\(time)", "Earliest recorded expiry: \(time)")
+        let window =
+            preferences.isWithinExpiryWindow(expiry, now: now)
+            ? language.text("已进入临期窗口 · 执行前仍需核验", "In the expiry window · verification required before use")
+            : language.text("尚未进入临期窗口", "Outside the expiry window")
+        return expiryText + " · " + window
+    }
+
     private func accountRow(_ profile: CodexProfile) -> some View {
-        let enabled = isEnabled(profile)
+        let enabled = isSelected(profile)
+        let authorized = isEnabled(profile)
         let reason = blockedReason(profile)
-        let hasInactiveAuthorization = preferences.authorizedAccounts[profile.id] != nil && !enabled
+        let hasInactiveAuthorization = preferences.authorizedAccounts[profile.id] != nil && !authorized
         return VStack(alignment: .leading, spacing: 4) {
             Toggle(
                 isOn: Binding(
-                    get: { isEnabled(profile) },
+                    get: { isSelected(profile) },
                     set: { value in
                         guard !isPreview else { return }
                         if !value {
-                            preferences.authorizedAccounts[profile.id] = nil
+                            preferences.setEnabled(false, profileID: profile.id)
                         } else if blockedReason(profile) == nil, let account = profile.lastSnapshot?.accountID, !account.isEmpty {
-                            preferences.authorizedAccounts[profile.id] = DispatchActivityStore.hash(account)
+                            preferences.setEnabled(true, profileID: profile.id, accountID: account)
                         }
                     }
                 )
@@ -206,6 +280,11 @@ struct ResetCreditAutoSettingsView: View {
             .toggleStyle(.switch)
             .controlSize(.small)
             .disabled(isPreview || (!enabled && reason != nil))
+            if enabled && !authorized {
+                Text(language.text("默认开启待核验，尚不会使用重置卡。", "Default on, awaiting verification. Reset cards will not be used yet."))
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let account = profile.lastSnapshot?.accountID,
                 profiles.contains(where: { $0.id != profile.id && $0.lastSnapshot?.accountID == account })
             {
@@ -223,13 +302,20 @@ struct ResetCreditAutoSettingsView: View {
                     .foregroundStyle(enabled ? AnyShapeStyle(WorkspaceStatusForeground.warning) : AnyShapeStyle(.secondary))
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if authorized && reason == nil {
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    Text(expiryStatus(profile, now: context.date))
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             if hasInactiveAuthorization {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(language.text("原身份授权已失效，当前身份未开启。", "The previous identity authorization is inactive; this identity is not enabled."))
                         .font(.system(size: 11)).foregroundStyle(WorkspaceStatusForeground.warning)
                     Button(language.text("清除", "Clear")) {
                         guard !isPreview else { return }
-                        preferences.authorizedAccounts[profile.id] = nil
+                        preferences.setEnabled(false, profileID: profile.id)
                     }
                     .buttonStyle(.borderless).controlSize(.small)
                     .foregroundStyle(PaletteControlForeground()).disabled(isPreview)
@@ -282,7 +368,8 @@ enum ResetCreditAutoSettingsPreviewFixture {
             for scheme in [ColorScheme.light, .dark] {
                 for enabled in [false, true] {
                     var preferences = CodexResetCreditAutoPreferences()
-                    if enabled { preferences.authorizedAccounts["ready"] = DispatchActivityStore.hash("synthetic-ready") }
+                    preferences.disableAll(profileIDs: Set(profiles.map(\.id)))
+                    if enabled { preferences.setEnabled(true, profileID: "ready", accountID: "synthetic-ready") }
                     let view = ResetCreditAutoSettingsView(
                         profiles: profiles, preferences: .constant(preferences), status: nil, language: language, isPreview: true)
                     let name = "\(language.rawValue)-\(scheme == .dark ? "dark" : "light")-\(enabled ? "enabled" : "off").png"
@@ -290,11 +377,12 @@ enum ResetCreditAutoSettingsPreviewFixture {
                 }
                 for scenario in ["desktop-only", "mirror-only", "shared-pool", "desktop-missing-entry", "desktop-running"] {
                     var preferences = CodexResetCreditAutoPreferences()
+                    preferences.disableAll(profileIDs: Set(profiles.map(\.id)))
                     if scenario != "mirror-only" {
-                        preferences.authorizedAccounts["desktop"] = DispatchActivityStore.hash("synthetic-desktop")
+                        preferences.setEnabled(true, profileID: "desktop", accountID: "synthetic-desktop")
                     }
                     if scenario == "mirror-only" || scenario == "shared-pool" {
-                        preferences.authorizedAccounts["mirror"] = DispatchActivityStore.hash("synthetic-desktop")
+                        preferences.setEnabled(true, profileID: "mirror", accountID: "synthetic-desktop")
                     }
                     let shownProfiles = scenario == "desktop-missing-entry" ? profiles.filter { $0.id != "mirror" } : profiles
                     let status =

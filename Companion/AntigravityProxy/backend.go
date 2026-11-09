@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +27,13 @@ type backend interface {
 	execute(context.Context, credential, executor.Request, executor.Options) (executor.Response, error)
 	stream(context.Context, credential, executor.Request, executor.Options) (*executor.StreamResult, error)
 	count(context.Context, credential, executor.Request, executor.Options) (executor.Response, error)
+}
+
+// Only adapters with an identity check after token rotation implement this.
+// A candidate returned by beginRefresh is not an executable credential.
+type stagedRefreshBackend interface {
+	beginRefresh(context.Context, credential) (credential, error)
+	verifyRefresh(context.Context, credential) (credential, error)
 }
 
 type upstreamError struct {
@@ -164,66 +170,35 @@ func readBounded(r io.Reader, maximum int64) ([]byte, error) {
 }
 
 func (b *sdkBackend) models(ctx context.Context, c credential) ([]string, error) {
+	result, err := b.fetchModelCatalog(ctx, c)
+	return result.Models, err
+}
+
+func (b *sdkBackend) fetchModelCatalog(ctx context.Context, c credential) (modelCatalog, error) {
 	body, _ := json.Marshal(map[string]string{"project": c.ProjectID})
 	r, err := http.NewRequestWithContext(ctx, http.MethodPost, ag.DailyAPIEndpoint+"/v1internal:fetchAvailableModels", bytes.NewReader(body))
 	if err != nil {
-		return nil, errors.New("catalog_failed")
+		return modelCatalog{}, errors.New("catalog_failed")
 	}
 	r.Header.Set("Authorization", "Bearer "+c.AccessToken)
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("User-Agent", misc.AntigravityUserAgent())
 	resp, err := b.client.Do(r)
 	if err != nil {
-		return nil, errors.New("catalog_failed")
+		return modelCatalog{}, errors.New("catalog_failed")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return nil, upstreamError{status: resp.StatusCode}
+		return modelCatalog{}, upstreamError{status: resp.StatusCode}
 	}
 	data, err := readBounded(resp.Body, 4<<20)
 	if err != nil {
-		return nil, err
+		return modelCatalog{}, err
 	}
-	return availableAntigravityModels(data, time.Now())
+	return antigravityCatalog(data, time.Now())
 }
 
 func availableAntigravityModels(data []byte, now time.Time) ([]string, error) {
-	var result struct {
-		Models map[string]json.RawMessage `json:"models"`
-	}
-	if json.Unmarshal(data, &result) != nil || result.Models == nil || len(result.Models) > 512 {
-		return nil, errors.New("invalid_catalog")
-	}
-	models := make([]string, 0, len(result.Models))
-	for id, raw := range result.Models {
-		if !modelPattern.MatchString(id) {
-			continue
-		}
-		var detail struct {
-			QuotaInfo *struct {
-				RemainingFraction *float64 `json:"remainingFraction"`
-				ResetTime         string   `json:"resetTime"`
-			} `json:"quotaInfo"`
-		}
-		if json.Unmarshal(raw, &detail) != nil {
-			continue
-		}
-		if detail.QuotaInfo != nil {
-			quota := detail.QuotaInfo
-			if quota.RemainingFraction != nil && (*quota.RemainingFraction <= 0 || *quota.RemainingFraction > 1) {
-				continue
-			}
-			if quota.ResetTime != "" {
-				reset, err := time.Parse(time.RFC3339, quota.ResetTime)
-				if err != nil || !reset.After(now) {
-					continue
-				}
-			}
-		}
-		// Absence of quotaInfo is unknown quota, not an invented balance. It
-		// remains an upstream-advertised model; actual 429s close admission.
-		models = append(models, id)
-	}
-	sort.Strings(models)
-	return models, nil
+	result, err := antigravityCatalog(data, now)
+	return result.Models, err
 }

@@ -36,6 +36,7 @@ struct LocalCLIModelAvailabilityFixture {
     static func main() throws {
         try testMissingFileIsUntested()
         try testWrongIdentityRejected()
+        try testMalformedCurrentEnvironmentRejected()
         try testWrongModelDoesNotUnlockProvider()
         try testExpiredEvidenceInvalid()
         try testFutureTestInvalid()
@@ -83,6 +84,48 @@ struct LocalCLIModelAvailabilityFixture {
         try expect(
             !LocalCLIModelDispatch.allows(snapshot: snapshot, binding: binding(account: acctA), now: now),
             "wrong identity cannot dispatch")
+    }
+
+    private static func testMalformedCurrentEnvironmentRejected() throws {
+        let snapshot = try loaded(evidence: [passedEvidence()])
+        var failures: [String] = []
+        func check(_ condition: Bool, _ label: String) {
+            if !condition { failures.append(label) }
+        }
+        for badHash in ["SHA256:NOTHEX", "", String(repeating: "f", count: 65)] {
+            var current = binding()
+            current.executableHash = badHash
+            check(
+                LocalCLIModelDispatch.reason(snapshot: snapshot, binding: current, now: now) == .invalidEvidence,
+                "present malformed executable hash cannot be treated as absent")
+        }
+        for badVersion in ["", String(repeating: "v", count: 65), "invalid\u{0000}version"] {
+            var current = binding()
+            current.cliVersion = badVersion
+            check(
+                LocalCLIModelDispatch.reason(snapshot: snapshot, binding: current, now: now) == .invalidEvidence,
+                "present malformed CLI version cannot be treated as absent")
+        }
+        var optional = binding()
+        optional.executableHash = nil
+        optional.cliVersion = nil
+        check(
+            LocalCLIModelDispatch.reason(snapshot: snapshot, binding: optional, now: now) == .eligible,
+            "absent optional environment fields keep the documented fingerprint-only contract")
+        var wrong = binding()
+        wrong.executableHash = "sha256:" + String(repeating: "cd", count: 32)
+        check(
+            LocalCLIModelDispatch.reason(snapshot: snapshot, binding: wrong, now: now) == .environmentMismatch,
+            "valid but different executable remains an environment mismatch")
+        wrong = binding()
+        wrong.cliVersion = "9.9.9"
+        check(
+            LocalCLIModelDispatch.reason(snapshot: snapshot, binding: wrong, now: now) == .environmentMismatch,
+            "valid but different version remains an environment mismatch")
+        check(
+            LocalCLIModelDispatch.reason(snapshot: snapshot, binding: binding(), now: now) == .eligible,
+            "matching environment remains eligible")
+        try expect(failures.isEmpty, failures.joined(separator: "; "))
     }
 
     private static func testWrongModelDoesNotUnlockProvider() throws {

@@ -302,7 +302,8 @@ def converge_reservation_after_failure(registry: activity.Registry, lease: dict,
 
 def run_workbuddy_task(registry: activity.Registry, lease: dict, *, argv: list[str],
                        cwd: Path, brief_path: Path, output: Path, timeout: float,
-                       capture_limit: int, output_identity: tuple[int, int]) -> dict:
+                       capture_limit: int, output_identity: tuple[int, int],
+                       stdin_bytes: bytes | None = None) -> dict:
     """Optional WorkBuddy entry wrapped around the managed activity.supervise().
 
     The child is launched only by activity.supervise() with a minimized
@@ -312,6 +313,9 @@ def run_workbuddy_task(registry: activity.Registry, lease: dict, *, argv: list[s
     group, and a cancel-before-launch convergence check. Never reads
     credentials.
     """
+    if stdin_bytes is not None and (not isinstance(stdin_bytes, bytes)
+                                    or len(stdin_bytes) > MAX_ARGV_BRIEF_BYTES):
+        raise AgentCliError("invalid_managed_stdin")
     owner, lease_id = lease["ownerThreadId"], lease["leaseId"]
     write_conforming_receipt(output, phase="starting", exit_code=None, extra={
         "leaseId": lease_id, "taskId": lease["taskId"], "ownerThreadId": owner,
@@ -398,16 +402,26 @@ def run_workbuddy_task(registry: activity.Registry, lease: dict, *, argv: list[s
         if state["timed_out"] or state["truncated"]:
             raise AgentCliError("run_incomplete_timeout_or_capture_limit")
 
+    stdin_file = None
     try:
         child_env = child_environment()
         child_env["PWD"] = str(cwd)
+        if stdin_bytes is not None:
+            # The validated brief never enters argv or a persistent path.
+            # An anonymous seekable descriptor avoids a pipe writer that can
+            # block before cancellation or survive the supervised child.
+            stdin_file = tempfile.TemporaryFile(mode="w+b")
+            stdin_file.write(stdin_bytes)
+            stdin_file.seek(0)
         # Only the child receives the capture descriptors. The reader drains
         # excess bytes without retaining them; memory and disk stay bounded.
         result = activity.supervise(registry, lease, argv, cwd, env=child_env,
-                                    stdout=write_fd, stderr=write_fd,
+                                    stdin=stdin_file, stdout=write_fd, stderr=write_fd,
                                     on_started=on_started, on_exited=on_exited, verify_result=verify_result,
                                     before_start=before_start)
     finally:
+        if stdin_file is not None:
+            stdin_file.close()
         close_writer()
         capture_stop.set()
         reader.join(timeout=1)

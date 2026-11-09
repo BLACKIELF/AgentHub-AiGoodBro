@@ -12,7 +12,11 @@ enum WidgetLanguage { case fixture
 }
 struct FeishuMaskedAccount { let value: String }
 struct FeishuMessageOptions { var includesAccountLabel = true }
-enum FeishuWebhookError: Error { case invalidNotification, cancelled, transportFailed, invalidResponse, httpStatus(Int), rejected(Int), missingWebhook }
+enum FeishuWebhookError: Error { case encodingFailed, invalidNotification, cancelled, transportFailed, invalidResponse, httpStatus(Int), rejected(Int), missingWebhook }
+struct FeishuSwitchNotification {}
+struct PublicResetAnnouncement {}
+struct PublicResetForecastNotification {}
+struct FeishuTaskCompletionNotification {}
 struct Credential { let endpoint = URL(string: "https://fixture.invalid/not-real")!; let generation: UInt64 = 1 }
 struct FakeBytes: AsyncSequence {
     typealias Element = UInt8
@@ -46,6 +50,10 @@ struct FakeBytes: AsyncSequence {
         guard value.isValid else { throw FeishuWebhookError.invalidNotification }
         return Data("{}".utf8)
     }
+    static func payloadData(for value: FeishuSwitchNotification) throws -> Data { Data("{}".utf8) }
+    static func publicResetPayload(_ value: PublicResetAnnouncement) throws -> Data { Data("{}".utf8) }
+    static func publicResetForecastPayload(_ value: PublicResetForecastNotification) throws -> Data { Data("{}".utf8) }
+    static func taskCompletionPayload(_ value: FeishuTaskCompletionNotification) throws -> Data { Data("{}".utf8) }
     func readCredential(completion: @escaping (Result<Credential, FeishuWebhookError>) -> Void) { credentialRead = completion }
     func isCurrentCredential(_ generation: UInt64) -> Bool { generation == currentGeneration }
     func finishCredential() { let callback = credentialRead; credentialRead = nil; callback?(.success(Credential())) }
@@ -193,6 +201,44 @@ __USAGE_METHODS__
         sender.finishCredential(); await tick()
         expect(gates == 2 && cancelled, "actual transport Task repeats admission after scheduling")
         expect(sender.session.posts == 0, "changed option between tasks causes zero POST")
+        // These four real public sender paths share the same separately
+        // scheduled POST. Credential generation alone cannot detect opt-out.
+        var admissionFailures = 0
+        func checkAdmission(_ condition: Bool, _ description: String) {
+            checks += 1
+            if !condition { admissionFailures += 1; print("FAIL: " + description) }
+        }
+        for route in 0..<4 {
+            for scenario in ["disabled-before-read", "disabled-after-read", "credential-changed", "allowed"] {
+                let service = FeishuWebhookService()
+                var permitted = scenario != "disabled-before-read"
+                var gateReads = 0
+                var completions = 0
+                var accepted = false
+                var wasCancelled = false
+                let gate = { gateReads += 1; return permitted }
+                let finish: (Result<Void, FeishuWebhookError>) -> Void = { result in
+                    completions += 1
+                    if case .success = result { accepted = true }
+                    if case .failure(.cancelled) = result { wasCancelled = true }
+                }
+                switch route {
+                case 0: service.send(.init(), shouldSend: gate, completion: finish)
+                case 1: service.sendPublicResetAnnouncement(.init(), shouldSend: gate, completion: finish)
+                case 2: service.sendPublicResetForecast(.init(), shouldSend: gate, completion: finish)
+                default: service.sendTaskCompletion(.init(), shouldSend: gate, completion: finish)
+                }
+                service.finishCredential()
+                if scenario == "disabled-after-read" { permitted = false }
+                if scenario == "credential-changed" { service.currentGeneration += 1 }
+                await tick()
+                let allowed = scenario == "allowed"
+                checkAdmission(service.session.posts == (allowed ? 1 : 0), "route \(route) \(scenario): exact POST admission")
+                checkAdmission(completions == 1 && (allowed ? accepted : wasCancelled), "route \(route) \(scenario): exactly one terminal result")
+                checkAdmission(gateReads == (scenario == "disabled-before-read" ? 1 : 2), "route \(route) \(scenario): admission is checked at both boundaries")
+            }
+        }
+        guard admissionFailures == 0 else { print("FAILED POST admission checks: \(admissionFailures)"); exit(1) }
         print("PASS manual notice runtime: \(checks) checks; real callback/queue/transport-task admission, synthetic I/O")
     }
 }

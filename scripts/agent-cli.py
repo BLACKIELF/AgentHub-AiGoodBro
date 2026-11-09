@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unified thin CLI entry for cooperating agents.
 
-Subcommands: capabilities / plan / status / result / cancel, plus an optional
+Subcommands: capabilities / inspect / plan / status / result / cancel, plus an optional
 double-switched WorkBuddy run. Codex plan is delegated in-process to the
 managed entry (next_dispatch_activity.main) verbatim; status/result/cancel
 reuse the same shared Registry. This file is a thin layer, not a second
@@ -25,6 +25,7 @@ from pathlib import Path
 import sys
 import time
 
+sys.dont_write_bytecode = True
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
@@ -33,6 +34,7 @@ import next_dispatch_invocation as invocation      # noqa: E402 (managed module,
 import agent_cli_capabilities as capabilities      # noqa: E402
 import agent_cli_grok as grok                      # noqa: E402 (thin grok candidate)
 import agent_cli_support as support                # noqa: E402
+import agent_cli_snapshot as snapshot              # noqa: E402
 from agent_cli_support import AgentCliError, Refusal, Unsupported  # noqa: E402
 
 EXIT_OK = 0
@@ -135,7 +137,7 @@ def plan_workbuddy(args, registry) -> int:
     executable = Path(args.executable or capabilities.WORKBUDDY_EXECUTABLE)
     if len(text.encode()) > support.MAX_ARGV_BRIEF_BYTES:
         raise Unsupported("brief_too_large_for_managed_argv")
-    support.validate_plain_argv([str(executable), "--model", model, "-p", text])
+    support.validate_plain_argv([str(executable), "--model", model, "--input-format", "text", "-p"])
     support.validate_executable(executable)
     emit({
         "schemaVersion": 1, "product": "workbuddy", "planOnly": True, "willNotLaunch": True,
@@ -143,6 +145,7 @@ def plan_workbuddy(args, registry) -> int:
         "executable": str(executable),
         "briefBytes": len(brief_bytes),
         "briefSHA256": hashlib.sha256(brief_bytes).hexdigest(),
+        "briefDelivery": "stdin",
         "output": str(output),
         "outputExclusive": True,
         "stateDir": str(registry.root),
@@ -192,7 +195,7 @@ def cmd_run(args, registry) -> int:
         # overrides exist solely for offline pseudo-process tests.
         raise Refusal("executable_override_requires_test_switch")
     support.validate_executable(executable)
-    argv = support.validate_plain_argv([str(executable), "--model", model, "-p", text])
+    argv = support.validate_plain_argv([str(executable), "--model", model, "--input-format", "text", "-p"])
     cwd = Path(args.cwd or Path.cwd()).resolve()
     if not cwd.is_dir():
         raise activity.ActivityError("project_directory_missing")
@@ -208,7 +211,7 @@ def cmd_run(args, registry) -> int:
             timeout=float(args.timeout_seconds) if args.timeout_seconds is not None
             else support.DEFAULT_RUN_TIMEOUT_SECONDS,
             capture_limit=support.MAX_CHILD_CAPTURE_BYTES,
-            output_identity=output_identity)
+            output_identity=output_identity, stdin_bytes=brief_bytes)
     except BaseException:
         # Preserve the reservation truthfully; never relaunch over an occupied
         # lease. A cancel that landed before launch must converge to cancelled
@@ -322,6 +325,15 @@ def parser() -> argparse.ArgumentParser:
     cap = sub.add_parser("capabilities", help="static capability statement (not live account success)")
     cap.add_argument("--product", choices=sorted(capabilities.CATALOG))
 
+    inspect = sub.add_parser("inspect", help="read recorded quota/models without refreshing, launching or changing accounts",
+                             description="Read cached facts only. Models use saved local CLI environment metadata; "
+                             "--model-dir selects one environment. Missing caches stay unknown. No credentials are read.")
+    inspect.add_argument("--section", choices=["all", "quota", "models"], default="all")
+    inspect.add_argument("--snapshot-dir", type=Path, default=None,
+                         help="Mac app support directory; defaults to ~/Library/Application Support/CodexAccountManagerNext")
+    inspect.add_argument("--model-dir", type=Path,
+                         help="read model-availability-v1.json in this one environment instead of saved environment metadata")
+
     plan = sub.add_parser("plan", help="prepare a task without launching anything")
     plan.add_argument("--product", choices=["codex", "grok", "workbuddy"], required=True)
     plan.add_argument("--code", help="codex account code (managed entry)")
@@ -376,6 +388,14 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = parser().parse_args(argv)
+    if args.command == "inspect":
+        try:
+            emit(snapshot.inspect(args.snapshot_dir or snapshot.default_directory(),
+                                  section=args.section, model_directory=args.model_dir))
+            return EXIT_OK
+        except snapshot.SnapshotError as error:
+            print("SNAPSHOT_ERROR: " + str(error), file=sys.stderr)
+            return EXIT_ERROR
     state_dir = args.state_dir or activity.SUPPORT
     registry = activity.Registry(Path(state_dir))
     commands = {
@@ -393,7 +413,7 @@ def main(argv=None) -> int:
     except (activity.ActivityError, invocation.InvocationError, support.AgentCliError) as error:
         print("ACTIVITY_ERROR: " + str(error), file=sys.stderr)
         return EXIT_ERROR
-    except (OSError, ValueError, UnicodeError) as error:
+    except (OSError, ValueError, UnicodeError, TypeError) as error:
         print("ACTIVITY_ERROR: operation_failed_no_private_details", file=sys.stderr)
         return EXIT_ERROR
 

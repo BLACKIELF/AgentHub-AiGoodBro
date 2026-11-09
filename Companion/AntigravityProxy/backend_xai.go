@@ -46,7 +46,8 @@ func (t xaiSubscriptionTransport) RoundTrip(r *http.Request) (*http.Response, er
 		case "api.x.ai":
 			allowed = r.Method == http.MethodGet && r.URL.Path == "/v1/models" && validXAIModelsQuery(r.URL.RawQuery)
 		case "cli-chat-proxy.grok.com":
-			allowed = r.URL.RawQuery == "" && r.Method == http.MethodPost && r.URL.Path == "/v1/responses"
+			allowed = (r.URL.RawQuery == "" && r.Method == http.MethodPost && r.URL.Path == "/v1/responses") ||
+				(r.Method == http.MethodGet && r.URL.Path == "/v1/billing" && r.URL.RawPath == "" && r.URL.Fragment == "" && r.URL.RawQuery == "format=credits")
 		}
 	}
 	if !allowed {
@@ -138,7 +139,7 @@ func (b *xaiBackend) identity(ctx context.Context, accessToken string) (string, 
 		Email   string `json:"email"`
 	}
 	if _, err := b.http.json(ctx, http.MethodGet, xaiUserInfoEndpoint, http.Header{"Authorization": {"Bearer " + accessToken}}, nil, &info); err != nil {
-		return "", "", errors.New("oauth_identity_failed")
+		return "", "", err
 	}
 	if strings.TrimSpace(info.Subject) == "" || len(info.Subject) > 1024 || len(info.Email) > 320 {
 		return "", "", errors.New("oauth_identity_failed")
@@ -147,27 +148,25 @@ func (b *xaiBackend) identity(ctx context.Context, accessToken string) (string, 
 }
 
 func (b *xaiBackend) refresh(ctx context.Context, c credential) (credential, error) {
+	candidate, err := b.beginRefresh(ctx, c)
+	if err != nil {
+		return credential{}, err
+	}
+	return b.verifyRefresh(ctx, candidate)
+}
+
+func (b *xaiBackend) beginRefresh(ctx context.Context, c credential) (credential, error) {
 	if _, err := b.requestAuth(c); err != nil {
 		return credential{}, err
 	}
-	token, status, err := b.http.deviceToken(ctx, xaiTokenEndpoint, http.Header{}, url.Values{"client_id": {xai.ClientID}, "grant_type": {"refresh_token"}, "refresh_token": {c.RefreshToken}})
+	token, _, err := b.http.deviceToken(ctx, xaiTokenEndpoint, http.Header{}, url.Values{"client_id": {xai.ClientID}, "grant_type": {"refresh_token"}, "refresh_token": {c.RefreshToken}})
 	if err != nil {
-		if status == 0 || status == 200 {
-			return credential{}, upstreamError{status: 401}
-		}
+		// The token reader already classifies explicit OAuth revocation. A
+		// transport, protocol or cancellation error is not proof of revocation.
 		return credential{}, err
 	}
 	if token.Error != "" {
-		return credential{}, upstreamError{status: 401}
-	}
-	// The identity endpoint is authoritative; never rotate a slot into another
-	// user just because a token endpoint returned a syntactically valid token.
-	subject, _, err := b.identity(ctx, token.AccessToken)
-	if err != nil || subject != c.AccountSubject {
-		return credential{}, upstreamError{status: 401}
-	}
-	if claimed, _ := oauthTokenClaims(token.IDToken); claimed != "" && claimed != subject {
-		return credential{}, upstreamError{status: 401}
+		return credential{}, errors.New("oauth_token_rejected")
 	}
 	c.AccessToken = token.AccessToken
 	if token.RefreshToken != "" {
@@ -178,6 +177,25 @@ func (b *xaiBackend) refresh(ctx context.Context, c credential) (credential, err
 	}
 	c.ExpiresAt = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second).Unix()
 	return c, c.validate()
+}
+
+func (b *xaiBackend) verifyRefresh(ctx context.Context, c credential) (credential, error) {
+	if _, err := b.requestAuth(c); err != nil {
+		return credential{}, err
+	}
+	// No refresh POST here: even across a restart, retry only the saved access
+	// token. The old refresh token may already have been spent by the server.
+	subject, _, err := b.identity(ctx, c.AccessToken)
+	if err != nil {
+		return credential{}, err
+	}
+	if subject != c.AccountSubject {
+		return credential{}, upstreamError{status: 401}
+	}
+	if claimed, _ := oauthTokenClaims(c.IDToken); claimed != "" && claimed != subject {
+		return credential{}, upstreamError{status: 401}
+	}
+	return c, nil
 }
 
 func (b *xaiBackend) models(ctx context.Context, c credential) ([]string, error) {

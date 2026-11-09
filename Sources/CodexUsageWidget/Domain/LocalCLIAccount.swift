@@ -131,6 +131,10 @@ struct ClaudeSubscriptionCandidate: Identifiable, Equatable {
     let canImport: Bool
 }
 
+enum LocalCLIQuotaScope: Equatable {
+    case account, model, shared
+}
+
 struct LocalCLIQuotaWindow: Identifiable, Equatable {
     let id: String
     let label: String
@@ -139,6 +143,9 @@ struct LocalCLIQuotaWindow: Identifiable, Equatable {
     var remainingTokens: Int64? = nil
     var totalTokens: Int64? = nil
     var isExpiry = false
+    var scope: LocalCLIQuotaScope = .account
+    var modelID: String? = nil
+    var sharedPool: String? = nil
 
     var tokenAmountText: String? {
         guard let remainingTokens, let totalTokens,
@@ -146,6 +153,28 @@ struct LocalCLIQuotaWindow: Identifiable, Equatable {
         else { return nil }
         let format = IntegerFormatStyle<Int64>.number.locale(Locale(identifier: "en_US"))
         return remainingTokens.formatted(format) + " / " + totalTokens.formatted(format) + " Tokens"
+    }
+}
+
+/// A provider-reported model or shared bucket, including an unknown reading.
+/// Keep it separate from legacy numeric windows so missing data cannot become
+/// 100% remaining in callers which require a measured percentage.
+struct LocalCLIQuotaObservation: Identifiable, Equatable {
+    let id: String
+    let label: String
+    let scope: LocalCLIQuotaScope
+    let modelID: String?
+    let sharedPool: String?
+    let remainingPercent: Double?
+    let resetsAt: Date?
+    var windowSeconds: Int64? = nil
+
+    var measuredWindow: LocalCLIQuotaWindow? {
+        guard let remainingPercent, remainingPercent.isFinite, (0...100).contains(remainingPercent) else { return nil }
+        return LocalCLIQuotaWindow(
+            id: id, label: sharedPool.map { $0 + " · " + label } ?? label,
+            usedPercent: 100 - remainingPercent, resetsAt: resetsAt,
+            scope: scope, modelID: modelID, sharedPool: sharedPool)
     }
 }
 
@@ -552,6 +581,9 @@ struct LocalCLIQuotaResult: Equatable {
     /// The provider may return a billing-period boundary without a usage
     /// percentage. Preserve it independently; it is not a reset-card expiry.
     var periodResetsAt: Date? = nil
+    /// Complete scoped observations, not a model catalog or an execution grant.
+    /// A shared bucket never supplies a missing per-model percentage.
+    var quotaObservations: [LocalCLIQuotaObservation] = []
 }
 
 enum LocalCLIQuotaPresentation {

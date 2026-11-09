@@ -144,23 +144,29 @@ enum TaskOverviewPresentationBuilder {
 
         let allItems = candidates.values.sorted(by: isOrderedBefore)
         let visibleItems = Array(allItems.prefix(max(0, min(1000, maximumItems))))
+        var needsAttentionCount = 0
+        var runningCount = 0
+        var recentlyEndedCount = 0
+        for item in allItems {
+            switch item.state {
+            case .waitingInput, .pendingApproval, .failed, .blocked:
+                needsAttentionCount += 1
+            case .running:
+                runningCount += 1
+            case .completed, .interrupted:
+                recentlyEndedCount += 1
+            default:
+                break
+            }
+        }
         return TaskOverviewPresentation(
             dataState: aggregateDataState(runtimeStatuses),
             runtimeStatuses: runtimeStatuses,
             items: visibleItems,
             totalItemCount: allItems.count,
-            needsAttentionCount: allItems.filter { item in
-                switch item.state {
-                case .waitingInput, .pendingApproval, .failed, .blocked:
-                    return true
-                default:
-                    return false
-                }
-            }.count,
-            runningCount: allItems.filter { $0.state == .running }.count,
-            recentlyEndedCount: allItems.filter {
-                $0.state == .completed || $0.state == .interrupted
-            }.count
+            needsAttentionCount: needsAttentionCount,
+            runningCount: runningCount,
+            recentlyEndedCount: recentlyEndedCount
         )
     }
 

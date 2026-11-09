@@ -68,18 +68,20 @@ enum WorkspacePreviewRenderer {
                     sevenDay: profileSevenDay, monthly: nil,
                     availableResetCredits: proxyUnknown ? nil : includeProxyLayoutFixtures ? (proxyExpired ? 1 : 3) : includeResetExpiryDisclosureFixtures ? 3 : 2,
                     resetCreditExpiries: includeProxyLayoutFixtures
-                        ? (proxyUnknown ? nil : proxyExpired
-                            ? [now.addingTimeInterval(-3_600)]
-                            : [now.addingTimeInterval(259_200), now.addingTimeInterval(3_600), now.addingTimeInterval(86_400)])
+                        ? (proxyUnknown
+                            ? nil
+                            : proxyExpired
+                                ? [now.addingTimeInterval(-3_600)]
+                                : [now.addingTimeInterval(259_200), now.addingTimeInterval(3_600), now.addingTimeInterval(86_400)])
                         : includeResetExpiryDisclosureFixtures
-                        ? (index == 0
-                            ? [now.addingTimeInterval(259_200), now.addingTimeInterval(3_600), now.addingTimeInterval(86_400)]
-                            : index == 1
-                                ? [now.addingTimeInterval(86_400), now.addingTimeInterval(3_600), now.addingTimeInterval(3_600)]
-                                : [now.addingTimeInterval(86_400), now.addingTimeInterval(-3_600)])
-                        : includeExpiryEdgeCases
-                            ? [now.addingTimeInterval(864_000), now.addingTimeInterval(index.isMultiple(of: 2) ? 129_600 : 259_200)]
-                            : [now.addingTimeInterval(864_000)],
+                            ? (index == 0
+                                ? [now.addingTimeInterval(259_200), now.addingTimeInterval(3_600), now.addingTimeInterval(86_400)]
+                                : index == 1
+                                    ? [now.addingTimeInterval(86_400), now.addingTimeInterval(3_600), now.addingTimeInterval(3_600)]
+                                    : [now.addingTimeInterval(86_400), now.addingTimeInterval(-3_600)])
+                            : includeExpiryEdgeCases
+                                ? [now.addingTimeInterval(864_000), now.addingTimeInterval(index.isMultiple(of: 2) ? 129_600 : 259_200)]
+                                : [now.addingTimeInterval(864_000)],
                     creditBalance: includeProxyLayoutFixtures ? proxyBalances[index % proxyBalances.count] : includeResetExpiryDisclosureFixtures ? "123.45" : nil,
                     creditBalanceUnlimited: includeProxyLayoutFixtures || includeResetExpiryDisclosureFixtures ? false : nil,
                     fetchedAt: proxyStale ? now.addingTimeInterval(-600) : now, appServerVersion: nil,
@@ -870,12 +872,14 @@ enum WorkspacePreviewRenderer {
                     ]
                 }
             }
-            try JSONSerialization.data(withJSONObject: [
-                "syntheticOnly": true, "referenceUTC": "2026-12-31T15:00:00Z", "images": images,
-                "globalCreditsEnabled": false, "expectedPresentation": expected,
-                "scope": "Production proxy UI; isolated fixture store and defaults; known, unknown, expired and stale reset evidence; no home views, clicks or saves",
-            ], options: [.prettyPrinted, .sortedKeys])
-                .write(to: directory.appendingPathComponent("compact-proxy-manifest.json"), options: .atomic)
+            try JSONSerialization.data(
+                withJSONObject: [
+                    "syntheticOnly": true, "referenceUTC": "2026-12-31T15:00:00Z", "images": images,
+                    "globalCreditsEnabled": false, "expectedPresentation": expected,
+                    "scope": "Production proxy UI; isolated fixture store and defaults; known, unknown, expired and stale reset evidence; no home views, clicks or saves",
+                ], options: [.prettyPrinted, .sortedKeys]
+            )
+            .write(to: directory.appendingPathComponent("compact-proxy-manifest.json"), options: .atomic)
             print("Proxy previews rendered: 40 production UI images; isolated synthetic fixtures and defaults; no home or live-account actions")
             return true
         } catch {

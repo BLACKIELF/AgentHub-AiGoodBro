@@ -851,14 +851,16 @@ extension LocalCLIQuotaReader {
                     id: key,
                     label: label,
                     usedPercent: try requiredPercent(utilization),
-                    resetsAt: parseDate(window["resets_at"])))
+                    resetsAt: parseDate(window["resets_at"]),
+                    scope: ["seven_day_opus", "seven_day_sonnet", "seven_day_oauth_apps"].contains(key) ? .shared : .account,
+                    sharedPool: ["seven_day_opus", "seven_day_sonnet", "seven_day_oauth_apps"].contains(key) ? label : nil))
         }
         if let rawLimits = root["limits"] {
             guard let limits = rawLimits as? [[String: Any]] else {
                 if !(rawLimits is NSNull) { throw LocalCLIReaderFailure.invalidResponse }
                 return windows
             }
-            for (index, limit) in limits.enumerated() {
+            for limit in limits {
                 if let rawActive = limit["is_active"] {
                     guard let active = strictBool(rawActive) else {
                         throw LocalCLIReaderFailure.invalidResponse
@@ -866,19 +868,22 @@ extension LocalCLIQuotaReader {
                     if !active { continue }
                 }
                 // The account/session aggregates already have their own circles.
-                // Only independently scoped model windows become model circles.
+                // A reported name alone can describe a family, not an API model.
                 guard let model = ((limit["scope"] as? [String: Any])?["model"] as? [String: Any]),
                     let label = LocalCLIQuotaPresentation.boundedLabel(model["display_name"] as? String)
                 else { continue }
                 if let kind = nonempty(limit["kind"]), kind != "weekly_scoped" { continue }
                 if let group = nonempty(limit["group"]), group != "weekly" { continue }
                 guard let percent = limit["percent"], !(percent is NSNull) else { continue }
+                let modelID = LocalCLIQuotaPresentation.boundedLabel((model["id"] ?? model["model_id"]) as? String, maximumUTF8Bytes: 128)
+                let identity = SHA256.hash(data: Data((modelID ?? label).utf8)).map { String(format: "%02x", $0) }.joined()
                 windows.append(
                     LocalCLIQuotaWindow(
-                        id: "limit-\(index)",
+                        id: "model:\(identity)",
                         label: label,
                         usedPercent: try requiredPercent(percent),
-                        resetsAt: parseDate(limit["resets_at"])))
+                        resetsAt: parseDate(limit["resets_at"]), scope: modelID == nil ? .shared : .model,
+                        modelID: modelID, sharedPool: modelID == nil ? label : nil))
             }
         }
         return windows

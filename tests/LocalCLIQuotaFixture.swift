@@ -268,6 +268,19 @@ struct LocalCLIQuotaFixture {
         }
         """#))
         try expect(claude.map(\.usedPercent) == [10, 20, 30], "Claude windows")
+        try expect(claude[0].scope == .account && claude[1].scope == .account, "Claude account windows are not per-model claims")
+        try expect(claude[2].scope == .shared && claude[2].modelID == nil, "Claude name-only model scope remains a shared group")
+        let scopedClaude = try LocalCLIQuotaReader.parseClaude(data(#"""
+        {"seven_day_opus":{"utilization":40},"seven_day_sonnet":{"utilization":50},
+         "limits":[{"kind":"weekly_scoped","percent":60,"scope":{"model":{"id":"synthetic-model-id","display_name":"Synthetic exact model"}}}]}
+        """#))
+        try expect(scopedClaude.count == 3 && scopedClaude.prefix(2).allSatisfy { $0.scope == .shared && $0.modelID == nil }, "Claude family quotas are shared without invented variant IDs")
+        try expect(scopedClaude.last?.modelID == "synthetic-model-id" && scopedClaude.last?.scope == .model, "Claude reported model identifier retained")
+        let reorderedClaude = try LocalCLIQuotaReader.parseClaude(data(#"""
+        {"limits":[{"kind":"weekly_scoped","percent":1,"scope":{"model":{"id":"synthetic-other","display_name":"Other"}}},
+         {"kind":"weekly_scoped","percent":60,"scope":{"model":{"id":"synthetic-model-id","display_name":"Synthetic exact model"}}}]}
+        """#))
+        try expect(scopedClaude.last?.id == reorderedClaude.last?.id, "Claude scoped window identity is independent of array position")
         let partialClaude = try LocalCLIQuotaReader.parseClaude(data(#"{"five_hour":{"utilization":10},"seven_day":{"resets_at":"2026-09-24T00:00:00Z"},"seven_day_opus":{"utilization":null}}"#))
         try expect(partialClaude.count == 1 && partialClaude[0].usedPercent == 10, "missing Claude window does not discard valid usage")
 
@@ -277,6 +290,11 @@ struct LocalCLIQuotaFixture {
         }
         """#))
         try expect(openCode.map(\.usedPercent) == [4, 100, 1], "OpenCode windows")
+        let exhaustedOpenCode = try LocalCLIQuotaReader.parseOpenCode(data(#"{"usage":{"rolling":{"status":"rate-limited"}}}"#))
+        try expect(exhaustedOpenCode.first?.usedPercent == 100, "OpenCode's explicit exhausted-window status preserves the official 100-percent fallback")
+        try expectThrows("malformed exhausted-window percentage") {
+            _ = try LocalCLIQuotaReader.parseOpenCode(data(#"{"usage":{"rolling":{"status":"rate-limited","percent":false}}}"#))
+        }
         let absentClaude = try LocalCLIQuotaReader.parseClaude(data("{}"))
         try expect(absentClaude.isEmpty, "absent Claude windows stay absent")
         let absentOpenCode = try LocalCLIQuotaReader.parseOpenCode(data(#"{"usage":{}}"#))

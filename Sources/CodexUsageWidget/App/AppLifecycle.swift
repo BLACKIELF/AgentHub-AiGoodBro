@@ -416,7 +416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 }
                 self.showMainWindow()
                 NotificationCenter.default.post(name: TokenMonitorWorkspaceNavigation.notification, object: "openAccounts")
-                if let failure = await self.store.requestTokenMonitorDesktopSwitch(accountKey: key) {
+                if let failure = await self.store.requestTokenMonitorDesktopSwitch(accountKey: key, vendorAccountID: vendorID) {
                     return .failure(request.id, failure)
                 }
                 return TokenMonitorHostReply(id: request.id, ok: true, accountId: vendorID)
@@ -1393,7 +1393,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         settings.$resetCreditAutoPreferences
             .removeDuplicates()
             .sink { [weak self] preferences in
-                self?.store.configureResetCreditAuto(preferences)
+                self?.store.configureResetCreditAuto(preferences) { [weak self] updated in
+                    self?.settings.saveResetCreditAutoPreferences(updated) == true
+                }
             }
             .store(in: &cancellables)
 

@@ -305,6 +305,35 @@ private func testIdentityChangeInvalidatesOldQuota() async throws {
     try expect(counts.model == 0, "model verifier ran after identity changed")
 }
 
+private func testForeignEvidenceNeverReachesReady() async throws {
+    let accountA = LocalCLILoginIdentity(fingerprint: fingerprint("a"), maskedLabel: "a***")
+    let accountB = LocalCLILoginIdentity(fingerprint: fingerprint("b"), maskedLabel: "b***")
+    for foreign: String? in [accountB.fingerprint, nil, ""] {
+        let quotaHarness = CapabilityHarness(
+            identities: Array(repeating: .verified(accountA), count: 4),
+            quota: .init(status: .verified, identityFingerprint: foreign),
+            models: ["model-a": .init(model: "model-a", status: .verified, identityFingerprint: accountA.fingerprint)])
+        let quotaCoordinator = LocalCLILoginCoordinator(capability: capability(harness: quotaHarness))
+        _ = await quotaCoordinator.start(target: target(), expectedIdentity: accountA, models: ["model-a"])
+        let quotaFailed = try await waitFor(quotaCoordinator) { $0.state == .failed }
+        try expect(quotaFailed.failure?.reason == .identityMismatch, "foreign or missing quota identity must fail")
+        try expect(quotaFailed.quota == nil, "foreign quota never enters the workflow")
+        let quotaCounts = await quotaHarness.counts()
+        try expect(quotaCounts.model == 0, "foreign quota cannot start a model probe")
+
+        let modelHarness = CapabilityHarness(
+            identities: Array(repeating: .verified(accountA), count: 4),
+            quota: .init(status: .verified, identityFingerprint: accountA.fingerprint),
+            models: ["model-a": .init(model: "model-a", status: .verified, identityFingerprint: foreign)])
+        let modelCoordinator = LocalCLILoginCoordinator(capability: capability(harness: modelHarness))
+        _ = await modelCoordinator.start(target: target(), expectedIdentity: accountA, models: ["model-a"])
+        let modelFailed = try await waitFor(modelCoordinator) { $0.state == .failed }
+        try expect(modelFailed.failure?.reason == .identityMismatch, "foreign or missing model identity must fail")
+        try expect(modelFailed.verifiedModels.isEmpty, "foreign model never enters the workflow")
+        try expect(modelFailed.quota?.identityFingerprint == accountA.fingerprint, "verified own-account quota stays bound")
+    }
+}
+
 private func testRepeatedStartDoesNotDoubleLaunch() async throws {
     let harness = CapabilityHarness(identities: [.missing], blockLaunch: true)
     let coordinator = LocalCLILoginCoordinator(capability: capability(harness: harness))
@@ -837,6 +866,7 @@ private func testFirstStageDeadlineCannotFailNextStage() async throws {
         try await testExitZeroDoesNotMeanReady()
         try await testCancelRejectsLateLaunchAndCallback()
         try await testIdentityChangeInvalidatesOldQuota()
+        try await testForeignEvidenceNeverReachesReady()
         try await testRepeatedStartDoesNotDoubleLaunch()
         try await testMissingCapabilityIsUnsupported()
         try await testExistingIdentityRunsQuotaAndEveryModel()

@@ -214,6 +214,7 @@ struct SettingsPanelView: View {
     @State private var localSelectedPage: SettingsPage
     private let pageSelection: Binding<SettingsPage>?
     @State private var showsAutomationCenter = false
+    @State private var showsPrivacyPreview = false
 
     private var selectedPage: SettingsPage {
         get { pageSelection?.wrappedValue ?? localSelectedPage }
@@ -275,6 +276,7 @@ struct SettingsPanelView: View {
         .appVisualEnvironment(catalog: settings.paletteCatalog, paletteID: settings.paletteID, appearance: PaletteAppearance(colorScheme))
         .readableForegroundHierarchy(colorScheme)
         .sheet(isPresented: $showsAutomationCenter) { AccountAutomationCenterView(store: store) }
+        .sheet(isPresented: $showsPrivacyPreview) { PrivacyPreviewView(language: language) }
         .onAppear { AHSettingsHeaderContext.shared.currentPage = selectedPage }
         .onChange(of: selectedPage) { AHSettingsHeaderContext.shared.currentPage = $0 }
         .onDisappear { AHSettingsHeaderContext.shared.currentPage = nil }
@@ -485,6 +487,13 @@ struct SettingsPanelView: View {
 
     private var workspacePage: some View {
         VStack(alignment: .leading, spacing: 6) {
+            SettingsPickerRow(
+                title: language.text("脱敏预览", "Privacy preview"),
+                detail: language.text("分享文本前在本机检查密钥、邮箱和个人路径", "Check keys, emails and personal paths locally before sharing text")
+            ) {
+                Button(language.text("打开", "Open")) { showsPrivacyPreview = true }
+                    .controlSize(.small).frame(width: settingsAccessoryColumnWidth)
+            }
             SettingsPickerRow(
                 title: language.text("账号自动刷新", "Automatic account refresh"),
                 detail: language.text(

@@ -1,6 +1,160 @@
 import Foundation
 
 @MainActor
+func runAutomaticDefaultWiringTests() async {
+    func settle() async {
+        for _ in 0..<3 {
+            await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
+        }
+    }
+    func profile(_ id: String, type: String? = "chatgpt", successful: Bool? = true, failed: Bool = false) -> CodexProfile {
+        CodexProfile(id: id, lastSnapshot: .init(accountID: "synthetic-" + id, quotaReadSucceeded: successful, accountType: type), lastQuotaReadFailureAt: failed ? Date() : nil)
+    }
+    let fixture = AutomaticRunnerFixture()
+    fixture.hasStarted = false
+    fixture.profileStore.profiles = [
+        profile("ready"), profile("unread", successful: nil), profile("failed", failed: true), profile("api", type: "apiKey"), profile("unknown-type", type: nil),
+    ]
+    fixture.profiles = fixture.profileStore.profiles
+    var saved: [CodexResetCreditAutoPreferences] = []
+    var insideSave = false
+    var recursiveSave = false
+    fixture.configureResetCreditAuto(.init()) { preferences in
+        if insideSave { recursiveSave = true }
+        insideSave = true
+        saved.append(preferences)
+        fixture.configureResetCreditAuto(preferences)
+        insideSave = false
+        return true
+    }
+    ResetCreditAutoTests.expect(saved.isEmpty && fixture.resetCreditAutoPreferences.authorizedAccounts.isEmpty, "default registration defers past the Published setter")
+    await settle()
+    ResetCreditAutoTests.expect(saved.count == 1 && !recursiveSave, "saved default config reentry settles without recursive publications")
+    ResetCreditAutoTests.expect(
+        fixture.resetCreditAutoPreferences.authorizedAccounts == ["ready": DispatchActivityStore.hash("synthetic-ready")],
+        "production registration requires successful ChatGPT identity and quota evidence")
+    ResetCreditAutoTests.expect(fixture.resetCreditAutoController.attempted.isEmpty, "registration does not bypass stopped runtime or trigger a consume")
+    fixture.profileStore.profiles[1] = profile("unread")
+    fixture.profiles = fixture.profileStore.profiles
+    await settle()
+    ResetCreditAutoTests.expect(
+        fixture.resetCreditAutoPreferences.permits(profileID: "unread", accountID: "synthetic-unread") && saved.count == 2,
+        "profile observer registers a newly verified account once")
+    fixture.profileStore.profiles[0].lastSnapshot?.accountID = "synthetic-changed"
+    fixture.profiles = fixture.profileStore.profiles
+    await settle()
+    ResetCreditAutoTests.expect(
+        !fixture.resetCreditAutoPreferences.permits(profileID: "ready", accountID: "synthetic-changed") && saved.count == 2,
+        "profile identity change does not replace the saved binding")
+
+    let failedSave = AutomaticRunnerFixture()
+    failedSave.hasStarted = false
+    failedSave.profileStore.profiles = [profile("ready")]
+    failedSave.profiles = failedSave.profileStore.profiles
+    var failedSaves = 0
+    failedSave.configureResetCreditAuto(.init()) { _ in
+        failedSaves += 1
+        return false
+    }
+    await settle()
+    ResetCreditAutoTests.expect(failedSaves == 1 && failedSave.resetCreditAutoPreferences.authorizedAccounts.isEmpty, "failed persistence never grants locally or loops")
+
+    for action in ["off", "all-off", "clear-old-identity"] {
+        let queued = AutomaticRunnerFixture()
+        queued.hasStarted = false
+        queued.profileStore.profiles = [profile("ready")]
+        queued.profiles = queued.profileStore.profiles
+        var before = CodexResetCreditAutoPreferences()
+        if action == "clear-old-identity" { before.setEnabled(true, profileID: "ready", accountID: "synthetic-old") }
+        var queuedSaves = 0
+        queued.configureResetCreditAuto(before) { preferences in
+            queuedSaves += 1
+            queued.configureResetCreditAuto(preferences)
+            return true
+        }
+        var changed = before
+        if action == "all-off" { changed.disableAll(profileIDs: ["ready"]) } else { changed.setEnabled(false, profileID: "ready") }
+        queued.configureResetCreditAuto(changed)
+        await settle()
+        ResetCreditAutoTests.expect(
+            queuedSaves == 0 && queued.resetCreditAutoPreferences.disabledProfileIDs.contains("ready")
+                && !queued.resetCreditAutoPreferences.permits(profileID: "ready", accountID: "synthetic-ready"),
+            "queued registration respects latest \(action) without saving an older grant")
+    }
+    let changedIdentity = AutomaticRunnerFixture()
+    changedIdentity.hasStarted = false
+    changedIdentity.profileStore.profiles = [profile("ready")]
+    changedIdentity.profiles = changedIdentity.profileStore.profiles
+    var identitySaves = 0
+    changedIdentity.configureResetCreditAuto(.init()) { preferences in
+        identitySaves += 1
+        changedIdentity.configureResetCreditAuto(preferences)
+        return true
+    }
+    changedIdentity.profileStore.profiles[0].lastSnapshot?.accountID = "synthetic-latest"
+    changedIdentity.profiles = changedIdentity.profileStore.profiles
+    await settle()
+    ResetCreditAutoTests.expect(
+        identitySaves == 1 && changedIdentity.resetCreditAutoPreferences.permits(profileID: "ready", accountID: "synthetic-latest")
+            && !changedIdentity.resetCreditAutoPreferences.permits(profileID: "ready", accountID: "synthetic-ready"),
+        "queued first registration uses the latest verified identity rather than a captured old snapshot")
+    let changedList = AutomaticRunnerFixture()
+    changedList.hasStarted = false
+    changedList.profileStore.profiles = [profile("ready")]
+    changedList.profiles = changedList.profileStore.profiles
+    var listSaves = 0
+    changedList.configureResetCreditAuto(.init()) { _ in
+        listSaves += 1
+        return false
+    }
+    changedList.profiles = []
+    await settle()
+    ResetCreditAutoTests.expect(
+        listSaves == 0 && changedList.resetCreditAutoPreferences.authorizedAccounts.isEmpty,
+        "queued registration rejects a now-incomplete published profile list")
+
+    let migration = AutomaticRunnerFixture()
+    migration.hasStarted = false
+    migration.profileStore.profiles = [profile("legacy-off")]
+    migration.profiles = migration.profileStore.profiles
+    migration.profileStore.hasReliableProfileList = false
+    let legacy = CodexResetCreditAutoPreferences.load(Data(#"{"authorizedAccounts":{},"leadMinutes":30}"#.utf8))
+    var migrationSaves = 0
+    migration.configureResetCreditAuto(legacy) { preferences in
+        migrationSaves += 1
+        migration.configureResetCreditAuto(preferences)
+        return true
+    }
+    await settle()
+    ResetCreditAutoTests.expect(migrationSaves == 0 && migration.resetCreditAutoPreferences.legacyMigrationPending, "damaged profile-store fallback cannot complete migration")
+    migration.profileStore.hasReliableProfileList = true
+    migration.profiles = []
+    await settle()
+    ResetCreditAutoTests.expect(migrationSaves == 0, "partial published profile list cannot complete migration")
+    migration.profiles = migration.profileStore.profiles
+    await settle()
+    ResetCreditAutoTests.expect(
+        migrationSaves == 1 && migration.resetCreditAutoPreferences.disabledProfileIDs == ["legacy-off"], "complete profile list migrates legacy off exactly once")
+    migration.profileStore.profiles.append(profile("later"))
+    migration.profiles = migration.profileStore.profiles
+    await settle()
+    ResetCreditAutoTests.expect(
+        migrationSaves == 2 && migration.resetCreditAutoPreferences.permits(profileID: "later", accountID: "synthetic-later"),
+        "new profile after migration defaults on while legacy off remains unchanged")
+    let preview = AutomaticRunnerFixture()
+    preview.isPreview = true
+    preview.profileStore.profiles = [profile("ready")]
+    preview.profiles = preview.profileStore.profiles
+    var previewSaves = 0
+    preview.configureResetCreditAuto(.init()) { _ in
+        previewSaves += 1
+        return true
+    }
+    await settle()
+    ResetCreditAutoTests.expect(previewSaves == 0 && preview.resetCreditAutoPreferences.authorizedAccounts.isEmpty, "preview never persists or grants default authorizations")
+}
+
+@MainActor
 func runAutomaticWiringTests() async {
     func configured() -> AutomaticRunnerFixture {
         let system = CodexProfile(id: "system", lastSnapshot: .init(accountID: "desktop"), isSystemProfile: true)
@@ -54,12 +208,14 @@ func runAutomaticWiringTests() async {
     noMirror.profiles.removeAll { !$0.isSystemProfile }
     noMirror.checkResetCreditAuto()
     await noMirror.resetCreditAutoTask?.value
-    ResetCreditAutoTests.expect(noMirror.resetCreditAutoController.attempted.isEmpty && noMirror.resetCreditAutoStatus != nil, "desktop without independent mirror pauses with visible reason")
+    ResetCreditAutoTests.expect(
+        noMirror.resetCreditAutoController.attempted.isEmpty && noMirror.resetCreditAutoStatus != nil, "desktop without independent mirror pauses with visible reason")
     let noDesktopAlias = desktopOnly()
     noDesktopAlias.aliases = [:]
     noDesktopAlias.checkResetCreditAuto()
     await noDesktopAlias.resetCreditAutoTask?.value
-    ResetCreditAutoTests.expect(noDesktopAlias.resetCreditAutoController.attempted.isEmpty && noDesktopAlias.resetCreditAutoStatus != nil, "desktop mirror without Hub mapping sends zero RPCs")
+    ResetCreditAutoTests.expect(
+        noDesktopAlias.resetCreditAutoController.attempted.isEmpty && noDesktopAlias.resetCreditAutoStatus != nil, "desktop mirror without Hub mapping sends zero RPCs")
     let sameHome = desktopOnly()
     sameHome.profiles[1].homeOverride = sameHome.profiles[0].codexHomeURL
     sameHome.checkResetCreditAuto()
@@ -69,13 +225,16 @@ func runAutomaticWiringTests() async {
     noConsent.resetCreditAutoPreferences.authorizedAccounts = [:]
     noConsent.checkResetCreditAuto()
     await noConsent.resetCreditAutoTask?.value
-    ResetCreditAutoTests.expect(noConsent.resetCreditAutoController.attempted.isEmpty, "desktop auto redemption remains opt-in")
+    ResetCreditAutoTests.expect(noConsent.resetCreditAutoController.attempted.isEmpty, "desktop auto redemption still requires a persisted identity grant")
     for state: TaskRuntimeState in [.running, .waitingInput, .recorded, .disconnected] {
         let active = desktopOnly()
-        active.codexLiveTasks = .init(connectionMode: .sharedDaemon, records: ["task": .init(threadID: "task", name: nil, state: state, updatedAt: Date(), turnID: nil, connectionMode: .sharedDaemon)], refreshedAt: Date())
+        active.codexLiveTasks = .init(
+            connectionMode: .sharedDaemon, records: ["task": .init(threadID: "task", name: nil, state: state, updatedAt: Date(), turnID: nil, connectionMode: .sharedDaemon)],
+            refreshedAt: Date())
         active.checkResetCreditAuto()
         await active.resetCreditAutoTask?.value
-        ResetCreditAutoTests.expect(active.resetCreditAutoController.attempted.isEmpty && active.resetCreditAutoStatus != nil, "desktop \(state.rawValue) task state prevents automatic review")
+        ResetCreditAutoTests.expect(
+            active.resetCreditAutoController.attempted.isEmpty && active.resetCreditAutoStatus != nil, "desktop \(state.rawValue) task state prevents automatic review")
     }
     let staleTask = desktopOnly()
     staleTask.codexLiveTasks = .init(connectionMode: .sharedDaemon, records: [:], refreshedAt: Date().addingTimeInterval(-60))
@@ -88,7 +247,9 @@ func runAutomaticWiringTests() async {
     await disconnectedTask.resetCreditAutoTask?.value
     ResetCreditAutoTests.expect(disconnectedTask.resetCreditAutoController.attempted.isEmpty, "disconnected desktop task evidence pauses redemption")
     let view = FixtureAutoEligibilityView(profiles: desktopOnly().profiles)
-    ResetCreditAutoTests.expect(view.blockedReason(view.profiles[0]) == nil && view.blockedReason(view.profiles[1]) == nil, "production eligibility enables desktop and mirror rows with verified independent credentials")
+    ResetCreditAutoTests.expect(
+        view.blockedReason(view.profiles[0]) == nil && view.blockedReason(view.profiles[1]) == nil,
+        "production eligibility enables desktop and mirror rows with verified independent credentials")
     let unavailableView = FixtureAutoEligibilityView(profiles: noMirror.profiles)
     ResetCreditAutoTests.expect(unavailableView.blockedReason(unavailableView.profiles[0]) != nil, "production eligibility explains absent independent credentials")
     func inFlight() -> AutomaticRunnerFixture {
@@ -102,7 +263,8 @@ func runAutomaticWiringTests() async {
     }
     let unchanged = inFlight()
     unchanged.syncAutomaticIdentity()
-    ResetCreditAutoTests.expect(unchanged.resetCreditAutoAdmission?.isCancelled == false && unchanged.resetCreditAutoDesktopVerified, "unchanged desktop identity preserves independent mirror admission")
+    ResetCreditAutoTests.expect(
+        unchanged.resetCreditAutoAdmission?.isCancelled == false && unchanged.resetCreditAutoDesktopVerified, "unchanged desktop identity preserves independent mirror admission")
     let activeDuringRequest = inFlight()
     activeDuringRequest.codexLiveTasks = .disconnected
     ResetCreditAutoTests.expect(activeDuringRequest.resetCreditAutoAdmission?.isCancelled == true, "production task observer revokes an in-flight desktop admission")
@@ -116,7 +278,7 @@ func runAutomaticWiringTests() async {
         ("executor quota failure", { $0.profileStore.profiles[1].lastQuotaReadFailureAt = Date() }),
         ("origin removal", { $0.profileStore.profiles.removeAll { $0.isSystemProfile } }),
         ("origin home", { $0.profileStore.profiles[0].homeOverride = URL(fileURLWithPath: "/synthetic-origin-home") }),
-        ("origin consent", { $0.resetCreditAutoPreferences.authorizedAccounts = [:] })
+        ("origin consent", { $0.resetCreditAutoPreferences.authorizedAccounts = [:] }),
     ]
     for (label, mutate) in identityChanges {
         let changed = inFlight()

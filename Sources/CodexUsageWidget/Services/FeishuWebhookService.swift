@@ -549,7 +549,7 @@ final class FeishuWebhookService {
             }
             switch result {
             case .success(let credential):
-                self.send(notification, to: credential.endpoint, credentialGeneration: credential.generation, completion: completion)
+                self.send(notification, to: credential.endpoint, credentialGeneration: credential.generation, admission: shouldSend, completion: completion)
             case .failure(let error):
                 completion(.failure(error))
             }
@@ -680,7 +680,8 @@ final class FeishuWebhookService {
                 return
             }
             switch result {
-            case .success(let credential): self.send(body: body, to: credential.endpoint, credentialGeneration: credential.generation, completion: completion)
+            case .success(let credential):
+                self.send(body: body, to: credential.endpoint, credentialGeneration: credential.generation, admission: shouldSend, completion: completion)
             case .failure(let error): completion(.failure(error))
             }
         })
@@ -702,7 +703,8 @@ final class FeishuWebhookService {
                 return
             }
             switch result {
-            case .success(let credential): self.send(body: body, to: credential.endpoint, credentialGeneration: credential.generation, completion: completion)
+            case .success(let credential):
+                self.send(body: body, to: credential.endpoint, credentialGeneration: credential.generation, admission: shouldSend, completion: completion)
             case .failure(let error): completion(.failure(error))
             }
         })
@@ -803,7 +805,8 @@ final class FeishuWebhookService {
                 return
             }
             switch result {
-            case .success(let credential): self.send(body: body, to: credential.endpoint, credentialGeneration: credential.generation, completion: completion)
+            case .success(let credential):
+                self.send(body: body, to: credential.endpoint, credentialGeneration: credential.generation, admission: shouldSend, completion: completion)
             case .failure(let error): completion(.failure(error))
             }
         })
@@ -875,6 +878,7 @@ final class FeishuWebhookService {
         _ notification: FeishuSwitchNotification,
         to endpoint: URL,
         credentialGeneration: UInt64,
+        admission: (@MainActor () -> Bool)? = nil,
         completion: @escaping (Result<Void, FeishuWebhookError>) -> Void
     ) {
         let body: Data
@@ -888,7 +892,7 @@ final class FeishuWebhookService {
             return
         }
 
-        send(body: body, to: endpoint, credentialGeneration: credentialGeneration, completion: completion)
+        send(body: body, to: endpoint, credentialGeneration: credentialGeneration, admission: admission, completion: completion)
     }
 
     private func send(

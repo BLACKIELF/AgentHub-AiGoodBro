@@ -34,7 +34,6 @@ struct TaskWorkbenchView: View {
                 Spacer()
                 Button(language.text("刷新", "Refresh")) {
                     onRefresh()
-                    model.rebuild()
                 }
             }
             if let status = message ?? model.status {

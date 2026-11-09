@@ -50,7 +50,8 @@ private func status(_ identity: String = "fixture@example.invalid", includeQuota
     var value: [String: Any] = ["email": identity, "userTier": ["name": "AI Pro"]]
     if includeQuota {
         value["cascadeModelConfigData"] = ["clientModelConfigs": [[
-            "label": "Gemini Pro", "quotaInfo": ["remainingFraction": 0.65, "resetTime": "2030-01-02T03:04:05Z"],
+            "label": "Synthetic model", "modelOrAlias": ["model": "synthetic-model"],
+            "quotaInfo": ["remainingFraction": 0.65, "resetTime": "2030-01-02T03:04:05Z"],
         ]]]
     }
     return try json(["userStatus": value])
@@ -72,6 +73,8 @@ private func liveSummary() async throws {
     let result = await reader.load(profile: profile(), now: now)
     try expect(result.state == .available, "live grouped quota available")
     try expect(result.windows.count == 2, "unknown and disabled buckets excluded")
+    try expect(result.quotaObservations.count == 3, "unknown shared bucket remains visible; disabled bucket omitted")
+    try expect(result.quotaObservations.allSatisfy { $0.scope == .shared && $0.sharedPool == "Gemini" && $0.modelID == nil }, "shared summary is never per-model quota")
     try expect(abs(result.windows[0].usedPercent - 28) < 0.001, "remaining fraction converted to used once")
     try expect(result.windows[1].usedPercent == 69, "oneof remaining parsed")
     try expect(result.windows[0].resetsAt != nil && result.windows[1].resetsAt == nil, "missing reset remains unknown")
@@ -84,11 +87,81 @@ private func liveSummary() async throws {
     try expect(requests.allSatisfy { $0.value(forHTTPHeaderField: "X-Codeium-Csrf-Token") == "synthetic-csrf" }, "token scoped to verified endpoint")
 }
 
+private func modelStatus(_ models: [[String: Any]]) throws -> Data {
+    try json(["userStatus": ["email": "fixture@example.invalid", "cascadeModelConfigData": ["clientModelConfigs": models]]])
+}
+
+private func loadModels(_ models: [[String: Any]], summary: Data = Data("{}".utf8)) async throws -> LocalCLIQuotaResult {
+    let data = try modelStatus(models)
+    return await AntigravityCLIQuotaReader(
+        transport: Transport([data, summary, data]), endpoints: { [endpoint] }, verifier: { _ in true }, cacheReader: { _ in nil }
+    ).load(profile: profile(), now: now)
+}
+
+private func modelAndSharedLosslessness() async throws {
+    let models: [[String: Any]] = (0..<7).map { index in
+        ["label": "Synthetic model \(index)", "modelOrAlias": ["model": "synthetic-\(index)"],
+         "quotaInfo": ["remainingFraction": Double(index) / 10]]
+    }
+    let shared = try json(["groups": [["displayName": "Claude and GPT models", "buckets": [
+        ["bucketId": "weekly", "window": "weekly", "displayName": "Weekly", "remainingFraction": 0.0],
+    ]]]])
+    let result = try await loadModels(models, summary: shared)
+    try expect(result.state == .available && result.quotaObservations.count == 8, "all seven models and shared summary survive")
+    try expect(result.windows.count == 8, "numeric compatibility retains every known independent constraint")
+    try expect(result.windows.last?.scope == .shared && result.windows.last?.usedPercent == 100, "exhausted shared weekly is not discarded when model quota exists")
+    try expect(result.windows.last?.sharedPool == "Claude & GPT", "upstream shared family label normalized")
+    try expect(result.quotaObservations.last?.windowSeconds == 604_800, "explicit upstream weekly span retained for shared projection")
+    try expect(result.quotaObservations.prefix(7).map(\.modelID) == (0..<7).map { "synthetic-\($0)" }, "actual GetUserStatus model identifiers retained")
+    try expect(result.quotaObservations.first?.remainingPercent == 0, "explicit empty model remains zero")
+    let reordered = try await loadModels(Array(models.reversed()), summary: shared)
+    let firstIDs = Dictionary(uniqueKeysWithValues: result.quotaObservations.map { ($0.modelID ?? "shared", $0.id) })
+    let nextIDs = Dictionary(uniqueKeysWithValues: reordered.quotaObservations.map { ($0.modelID ?? "shared", $0.id) })
+    try expect(firstIDs == nextIDs, "stable IDs are independent of returned array order")
+    let failedSummary = try await loadModels(models, summary: Data("not-json".utf8))
+    try expect(failedSummary.quotaObservations.count == 7 && failedSummary.windows.count == 7, "summary failure keeps per-model readings")
+    let sameName = try await loadModels([
+        ["label": "Same synthetic name", "modelOrAlias": ["model": "synthetic-a"], "quotaInfo": ["remainingFraction": 0.3]],
+        ["label": "Same synthetic name", "modelOrAlias": ["model": "synthetic-b"], "quotaInfo": ["remainingFraction": 0.6]],
+    ])
+    try expect(sameName.quotaObservations.count == 2 && Set(sameName.quotaObservations.map(\.id)).count == 2, "same labels do not collapse distinct real model IDs")
+    let duplicate = try await loadModels([models[0], models[0]])
+    try expect(duplicate.quotaObservations.count == 1, "identical duplicate model evidence is deduplicated")
+    var contradiction = models[0]
+    contradiction["quotaInfo"] = ["remainingFraction": 0.8]
+    let conflict = try await loadModels([models[0], contradiction])
+    try expect(conflict.state == .unavailable && conflict.quotaObservations.isEmpty, "contradictory duplicate model evidence fails closed")
+}
+
+private func unknownModelReadingsAndBounds() async throws {
+    let quotas: [[String: Any]] = [
+        [:], ["remainingFraction": NSNull()], ["remainingFraction": -0.1],
+        ["remainingFraction": 1.1], ["remainingFraction": true], ["remainingFraction": "0.5"],
+        ["remainingFraction": 0.5, "resetTime": "not-a-date"],
+        ["remainingFraction": 0.5, "resetTime": "2020-01-01T00:00:00Z"],
+    ]
+    let models: [[String: Any]] = quotas.enumerated().map { index, quota in
+        ["label": "合成模型 \(index)", "modelOrAlias": ["model": "synthetic-unknown-\(index)"], "quotaInfo": quota]
+    }
+    let result = try await loadModels(models)
+    try expect(result.state == .unavailable && result.windows.isEmpty, "unknown readings never become numerical quota")
+    try expect(result.quotaObservations.count == models.count && result.quotaObservations.allSatisfy { $0.remainingPercent == nil }, "all unknown models remain displayable")
+    try expect(result.quotaObservations.first?.label == "合成模型 0", "Unicode reported names preserved")
+    try expect(result.quotaObservations.last?.resetsAt != nil, "expired observation retains its reset provenance")
+    let malformedID = try await loadModels([["label": "Synthetic reported name", "modelOrAlias": ["model": "synthetic-invalid\n"]]])
+    try expect(malformedID.quotaObservations.count == 1 && malformedID.quotaObservations.first?.modelID == nil, "trailing newline cannot become a model identifier")
+    let boundary: [[String: Any]] = (0..<256).map { ["label": "Synthetic \($0)", "modelOrAlias": ["model": "synthetic-boundary-\($0)"]] }
+    let atLimit = try await loadModels(boundary)
+    try expect(atLimit.quotaObservations.count == 256, "all bounded model observations retained without truncation")
+    let tooMany = try await loadModels(boundary + [["label": "Overflow", "modelOrAlias": ["model": "synthetic-overflow"]]])
+    try expect(tooMany.quotaObservations.isEmpty && tooMany.state == .unavailable, "oversized model catalog rejected rather than silently truncated")
+}
+
 private func identityAndIsolation() async throws {
     let switched = Transport([try status(), try summary(), try status("other@example.invalid")])
     let changed = await AntigravityCLIQuotaReader(transport: switched, endpoints: { [endpoint] }, verifier: { _ in true }, cacheReader: { _ in nil })
         .load(profile: profile(), now: now)
-    try expect(changed.state == .unavailable && changed.windows.isEmpty, "account switch must discard quota")
+    try expect(changed.state == .unavailable && changed.windows.isEmpty && changed.quotaObservations.isEmpty, "account switch must discard model and shared quota")
     try expect(changed.messageCode == "local_cli_antigravity_account_changed", "switch diagnosed")
 
     let rejected = Transport([])
@@ -137,6 +210,8 @@ private func parserBoundaries() throws {
     ]]]])
     let windows = try AntigravityCLIQuotaReader.parseSummary(bytes, now: now)
     try expect(windows.map(\.usedPercent) == [100, 0], "invalid values are not clamped or invented; explicit zero survives")
+    let observations = try AntigravityCLIQuotaReader.parseSummaryObservations(bytes, now: now)
+    try expect(observations.count == 6 && observations.filter { $0.remainingPercent == nil }.count == 4, "invalid shared readings remain unknown entries")
     try expect(AntigravityCLIQuotaReader.csrfArgument("/synthetic --csrf_token=abc-123 --other") == "abc-123", "equal flag")
     try expect(AntigravityCLIQuotaReader.csrfArgument("--csrf_token abc_123") == "abc_123", "separate flag")
     try expect(AntigravityCLIQuotaReader.csrfArgument("--csrf_token abc;evil") == nil, "control syntax rejected")
@@ -170,6 +245,8 @@ private func cacheTest() throws {
     let saved = now.addingTimeInterval(-3_600)
     let result = try AntigravityCLIQuotaReader.parseCache(.init(data: data, modifiedAt: saved), now: now)
     try expect(result.windows.count == 1 && result.windows[0].usedPercent == 25, "protobuf model remaining decoded")
+    try expect(result.quotaObservations.count == 2 && result.quotaObservations.last?.remainingPercent == nil, "cache models without quota remain visible as unknown")
+    try expect(result.quotaObservations.allSatisfy { $0.modelID == nil && $0.scope == .model }, "legacy label is not invented as executable model ID")
     try expect(result.state == .unavailable, "cache cannot prove fresh quota or login")
     try expect(result.fetchedAt == saved, "cache timestamp not relabelled as refresh time")
     try expect(result.sourceLabel.contains("cached") && result.messageCode == "local_cli_antigravity_cached_quota", "cache provenance explicit")
@@ -194,6 +271,8 @@ private func cacheTest() throws {
 @main private enum Fixture {
     static func main() async throws {
         try await liveSummary()
+        try await modelAndSharedLosslessness()
+        try await unknownModelReadingsAndBounds()
         try await identityAndIsolation()
         try parserBoundaries()
         try cacheTest()

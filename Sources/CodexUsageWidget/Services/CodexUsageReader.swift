@@ -626,8 +626,10 @@ final class CodexUsageReader {
         }
         mergedShares = replacingGrokSessionShare(in: mergedShares, with: GrokUsageReader.lifetimeTokens())
         mergedShares.sort { $0.tokens > $1.tokens }
+        // An absent optional source adds nothing; it does not invalidate the
+        // verified cc-switch totals or create a zero-valued ZCode share.
+        let zcodeToday = zcodeUsage?.todayTokens ?? 0
         guard let baseToday = local?.allAgentsTodayTokens,
-            let zcodeToday = zcodeUsage?.todayTokens,
             let mergedLifetime = summedTokenCounts(mergedShares.map(\.tokens)),
             let mergedToday = summedTokenCounts([baseToday, zcodeToday])
         else {
@@ -1694,14 +1696,17 @@ final class CodexUsageReader {
                 available.append(ResetCreditDetail(id: id, expiresAt: expiry))
             }
         }
-        return (count, available.sorted { lhs, rhs in
-            switch (lhs.expiresAt, rhs.expiresAt) {
-            case (let left?, let right?): return left == right ? lhs.id < rhs.id : left < right
-            case (.some, .none): return true
-            case (.none, .some): return false
-            case (.none, .none): return lhs.id < rhs.id
+        return (
+            count,
+            available.sorted { lhs, rhs in
+                switch (lhs.expiresAt, rhs.expiresAt) {
+                case (let left?, let right?): return left == right ? lhs.id < rhs.id : left < right
+                case (.some, .none): return true
+                case (.none, .some): return false
+                case (.none, .none): return lhs.id < rhs.id
+                }
             }
-        })
+        )
     }
 
     private func parseRateWindow(_ value: Any?) -> RateWindow? {

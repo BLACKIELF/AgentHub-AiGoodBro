@@ -428,6 +428,48 @@ private actor QuotaReadSequence {
     }
 }
 
+private actor ModelObservationSequence {
+    private var reads = 0
+    func next() -> LocalCLIQuotaResult {
+        reads += 1
+        let observation = LocalCLIQuotaObservation(
+            id: "synthetic-model-observation", label: "Synthetic model", scope: .model,
+            modelID: "synthetic-model", sharedPool: nil, remainingPercent: reads == 1 ? 25 : nil, resetsAt: nil)
+        return LocalCLIQuotaResult(
+            state: reads == 1 ? .available : .unavailable, fetchedAt: Date(), maskedIdentity: nil,
+            identityFingerprint: nil, planLabel: nil, windows: observation.measuredWindow.map { [$0] } ?? [],
+            balance: nil, balanceCurrency: nil, sourceLabel: "Synthetic", messageCode: nil,
+            quotaObservations: [observation])
+    }
+}
+
+@MainActor
+private func testUnknownModelObservationReplacesOldMeasuredQuota() async throws {
+    let paths = try makeRoot("model-observation")
+    defer { try? FileManager.default.removeItem(at: paths.root) }
+    let sequence = ModelObservationSequence()
+    let store = makeStore(home: paths.home, support: paths.support, loader: { _ in await sequence.next() })
+    store.discover()
+    let directory = paths.root.appendingPathComponent("linked", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    // Exercise the provider-independent store transition through an existing
+    // synthetic linkable profile; the injected loader performs no native read.
+    store.link(kind: .zcode, directory: directory, name: "Synthetic")
+    guard let linked = store.profiles(for: .zcode).first(where: { !$0.isDefault }) else {
+        throw FixtureFailure.failed("synthetic model-observation profile")
+    }
+    for _ in 0..<2 {
+        store.refresh(linked)
+        for _ in 0..<100 where store.refreshing.contains(linked.id) {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+    let published = store.quotas[linked.id]
+    try expect(published?.state == .unavailable && published?.windows.isEmpty == true, "new unknown model evidence cannot preserve a prior measured percentage")
+    try expect(published?.quotaObservations.count == 1 && published?.quotaObservations.first?.modelID == "synthetic-model", "unknown result still publishes its actual model catalog")
+    try expect(!store.stale.contains(linked.id), "fresh unknown reading differs from failed refresh of stale quota")
+}
+
 @MainActor
 private func testTransientFailureAndConfirmedSignOut() async throws {
     let paths = try makeRoot("read-state")
@@ -1885,6 +1927,7 @@ private func testKimiTotalPresentation() throws {
         try await testRediscoveryRemovesOtherWritersAccountState()
         try testManagedGrokIsolationAndStaleWriter()
         try await testTransientFailureAndConfirmedSignOut()
+        try await testUnknownModelObservationReplacesOldMeasuredQuota()
         try await testClaudeKeychainChangeClearsCachedIdentity()
         try await testAuthenticationWithoutQuotaOrTerminalExit()
         try await testOpenCodeReusesSavedProviderUnlessUpdateRequested()

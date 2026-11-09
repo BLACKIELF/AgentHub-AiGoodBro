@@ -68,11 +68,11 @@ struct AntigravityCLIQuotaReader {
                         let status = try await request("GetUserStatus", endpoint: endpoint)
                         let identity = try Self.parseStatus(status, now: now)
                         guard let account = identity.identity else { continue }
-                        var windows = identity.windows
+                        var observations = identity.observations
                         if let summary = try? await request("RetrieveUserQuotaSummary", endpoint: endpoint),
-                            let richer = try? Self.parseSummary(summary, now: now), !richer.isEmpty
+                            let shared = try? Self.parseSummaryObservations(summary, now: now)
                         {
-                            windows = richer
+                            observations.append(contentsOf: shared)
                         }
                         try Task.checkCancellation()
                         // The user can switch accounts in Antigravity during a refresh.
@@ -82,9 +82,10 @@ struct AntigravityCLIQuotaReader {
                         guard after.identity?.lowercased() == account.lowercased() else {
                             throw Failure.identityChanged
                         }
+                        let windows = Self.measuredWindows(observations)
                         return Self.result(
                             state: windows.isEmpty ? .unavailable : .available, at: now,
-                            identity: account, plan: after.plan ?? identity.plan, windows: windows,
+                            identity: account, plan: after.plan ?? identity.plan, windows: windows, observations: observations,
                             code: windows.isEmpty ? "local_cli_antigravity_no_quota" : nil)
                     } catch Failure.identityChanged {
                         return Self.result(state: .unavailable, at: now, code: "local_cli_antigravity_account_changed")
@@ -149,7 +150,7 @@ struct AntigravityCLIQuotaReader {
     private struct Status {
         let identity: String?
         let plan: String?
-        let windows: [LocalCLIQuotaWindow]
+        let observations: [LocalCLIQuotaObservation]
     }
 
     private static func object(_ data: Data) throws -> [String: Any] {
@@ -175,54 +176,110 @@ struct AntigravityCLIQuotaReader {
             .compactMap { LocalCLIQuotaPresentation.boundedLabel($0 as? String) }.first
         let models = (status["cascadeModelConfigData"] as? [String: Any])?["clientModelConfigs"] as? [[String: Any]] ?? []
         guard models.count <= 256 else { throw Failure.invalid }
-        var windows: [LocalCLIQuotaWindow] = []
-        for (index, model) in models.enumerated() {
-            guard let label = LocalCLIQuotaPresentation.boundedLabel(model["label"] as? String, maximumUTF8Bytes: 128),
-                let quota = model["quotaInfo"] as? [String: Any],
-                let remaining = fraction(quota["remainingFraction"])
+        var observations: [LocalCLIQuotaObservation] = []
+        for model in models {
+            let reportedID = ((model["modelOrAlias"] as? [String: Any])?["model"] ?? model["modelId"] ?? model["name"]) as? String
+            let modelID = modelIdentifier(reportedID)
+            guard let label = LocalCLIQuotaPresentation.boundedLabel(model["label"] as? String, maximumUTF8Bytes: 128) ?? modelID
             else { continue }
-            let reset = date(quota["resetTime"])
-            guard reset.map({ $0 > now }) ?? true else { continue }
-            windows.append(LocalCLIQuotaWindow(id: "model-\(index)", label: label, usedPercent: (1 - remaining) * 100, resetsAt: reset))
+            let quota = model["quotaInfo"] as? [String: Any]
+            let reading = quotaReading(quota?["remainingFraction"], reset: quota?["resetTime"], now: now)
+            let observation = LocalCLIQuotaObservation(
+                id: modelID.map { stableID("model", [$0]) } ?? stableID("model-name", [label]), label: label, scope: .model,
+                modelID: modelID, sharedPool: nil, remainingPercent: reading.remaining, resetsAt: reading.reset)
+            try append(observation, to: &observations)
         }
-        return Status(identity: identity, plan: plan, windows: windows)
+        return Status(identity: identity, plan: plan, observations: observations)
     }
 
     static func parseSummary(_ data: Data, now: Date) throws -> [LocalCLIQuotaWindow] {
+        try parseSummaryObservations(data, now: now).compactMap(\.measuredWindow)
+    }
+
+    static func parseSummaryObservations(_ data: Data, now: Date) throws -> [LocalCLIQuotaObservation] {
         let object = try object(data)
         let payload = object["response"] as? [String: Any] ?? object["summary"] as? [String: Any] ?? object
         guard let groups = payload["groups"] as? [[String: Any]], groups.count <= 32 else { throw Failure.invalid }
-        var windows: [LocalCLIQuotaWindow] = []
-        for (groupIndex, group) in groups.enumerated() {
-            let groupName = LocalCLIQuotaPresentation.boundedLabel((group["displayName"] ?? group["name"]) as? String) ?? "Quota"
+        var observations: [LocalCLIQuotaObservation] = []
+        for group in groups {
+            guard let groupName = LocalCLIQuotaPresentation.boundedLabel((group["displayName"] ?? group["name"] ?? group["id"]) as? String, maximumUTF8Bytes: 128)
+            else { continue }
+            let pool = poolName(groupName)
+            let groupID = LocalCLIQuotaPresentation.boundedLabel((group["groupId"] ?? group["id"]) as? String, maximumUTF8Bytes: 128) ?? groupName
             let buckets = group["buckets"] as? [[String: Any]] ?? []
             guard buckets.count <= 32 else { throw Failure.invalid }
-            for (bucketIndex, bucket) in buckets.enumerated() {
+            for bucket in buckets {
                 guard bucket["disabled"] as? Bool != true else { continue }
                 let remainingObject = bucket["remaining"] as? [String: Any] ?? [:]
                 let raw =
                     bucket["remainingFraction"] ?? remainingObject["remainingFraction"]
                     ?? ((remainingObject["case"] as? String) == "remainingFraction" ? remainingObject["value"] : nil)
-                guard let remaining = fraction(raw),
+                guard
                     let name = LocalCLIQuotaPresentation.boundedLabel(
-                        (bucket["displayName"] ?? bucket["name"] ?? bucket["bucketId"] ?? bucket["id"]) as? String)
+                        (bucket["displayName"] ?? bucket["name"] ?? bucket["window"] ?? bucket["bucketId"] ?? bucket["id"]) as? String, maximumUTF8Bytes: 128)
                 else { continue }
-                let reset = date(bucket["resetTime"])
-                guard reset.map({ $0 > now }) ?? true else { continue }
-                windows.append(
-                    LocalCLIQuotaWindow(
-                        id: "group-\(groupIndex)-bucket-\(bucketIndex)",
-                        label: String("\(groupName) · \(name)".prefix(100)),
-                        usedPercent: (1 - remaining) * 100, resetsAt: reset))
+                let bucketID = LocalCLIQuotaPresentation.boundedLabel((bucket["bucketId"] ?? bucket["id"] ?? bucket["window"]) as? String, maximumUTF8Bytes: 128) ?? name
+                let reading = quotaReading(raw, reset: bucket["resetTime"], now: now)
+                let windowSeconds: Int64? =
+                    switch (bucket["window"] as? String)?.lowercased() {
+                    case "5h": 18_000
+                    case "weekly": 604_800
+                    default: nil
+                    }
+                try append(
+                    LocalCLIQuotaObservation(
+                        id: stableID("shared", [groupID, bucketID]), label: name, scope: .shared,
+                        modelID: nil, sharedPool: pool, remainingPercent: reading.remaining, resetsAt: reading.reset,
+                        windowSeconds: windowSeconds), to: &observations)
             }
         }
-        guard LocalCLIQuotaPresentation.validWindows(windows) else { throw Failure.invalid }
-        return windows
+        guard observations.count <= 256 else { throw Failure.invalid }
+        return observations
+    }
+
+    private static func append(_ observation: LocalCLIQuotaObservation, to observations: inout [LocalCLIQuotaObservation]) throws {
+        if let previous = observations.first(where: { $0.id == observation.id }) {
+            guard previous == observation else { throw Failure.invalid }
+        } else {
+            observations.append(observation)
+        }
+    }
+
+    private static func stableID(_ scope: String, _ names: [String]) -> String {
+        let data = (try? JSONSerialization.data(withJSONObject: names)) ?? Data()
+        return scope + ":" + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func modelIdentifier(_ raw: String?) -> String? {
+        guard let raw, let match = raw.range(of: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", options: .regularExpression),
+            match == raw.startIndex..<raw.endIndex
+        else { return nil }
+        return raw
+    }
+
+    private static func poolName(_ value: String) -> String {
+        var name = value
+        if name.lowercased().hasSuffix(" models") { name = String(name.dropLast(7)).trimmingCharacters(in: .whitespaces) }
+        return name.replacingOccurrences(of: " and ", with: " & ")
+    }
+
+    private static func quotaReading(_ raw: Any?, reset rawReset: Any?, now: Date) -> (remaining: Double?, reset: Date?) {
+        let reset = date(rawReset)
+        let suppliedReset = rawReset != nil && !(rawReset is NSNull) && (rawReset as? String) != ""
+        guard !suppliedReset || reset != nil, reset.map({ $0 > now }) ?? true else { return (nil, reset) }
+        return (fraction(raw).map { $0 * 100 }, reset)
+    }
+
+    private static func measuredWindows(_ observations: [LocalCLIQuotaObservation]) -> [LocalCLIQuotaWindow] {
+        // Existing overview consumers accept numeric windows only. Preserve
+        // every measured constraint, including exhausted shared weekly buckets;
+        // their percentages are independent and must never be added together.
+        observations.compactMap(\.measuredWindow)
     }
 
     private static func result(
         state: LocalCLIQuotaState, at: Date, identity: String? = nil, plan: String? = nil,
-        windows: [LocalCLIQuotaWindow] = [], cached: Bool = false, code: String? = nil
+        windows: [LocalCLIQuotaWindow] = [], observations: [LocalCLIQuotaObservation] = [], cached: Bool = false, code: String? = nil
     ) -> LocalCLIQuotaResult {
         let identity = LocalCLIQuotaPresentation.validIdentity(identity)
         return LocalCLIQuotaResult(
@@ -231,7 +288,8 @@ struct AntigravityCLIQuotaReader {
                 SHA256.hash(data: Data("next-local-cli:v1:antigravity:\($0.lowercased())".utf8))
                     .map { String(format: "%02x", $0) }.joined()
             }, planLabel: plan, windows: windows, balance: nil, balanceCurrency: nil,
-            sourceLabel: cached ? "Antigravity · cached IDE quota" : "Antigravity · official desktop quota", messageCode: code)
+            sourceLabel: cached ? "Antigravity · cached IDE quota" : "Antigravity · official desktop quota", messageCode: code,
+            quotaObservations: observations)
     }
 
     private static func number(_ raw: Any?) -> Double? {
@@ -414,18 +472,18 @@ struct AntigravityCLIQuotaReader {
         {
             throw Failure.identityChanged
         }
-        var windows: [LocalCLIQuotaWindow] = []
+        var observations: [LocalCLIQuotaObservation] = []
         for group in root[33] ?? [] {
             guard let bytes = group.bytes else { continue }
             for model in try protobuf(bytes)[1] ?? [] {
                 guard let data = model.bytes else { continue }
                 let fields = try protobuf(data)
                 guard let rawLabel = fields[1]?.first?.bytes.flatMap({ String(data: $0, encoding: .utf8) }),
-                    let label = LocalCLIQuotaPresentation.boundedLabel(rawLabel, maximumUTF8Bytes: 128),
-                    let quotaData = fields[15]?.first?.bytes
+                    let label = LocalCLIQuotaPresentation.boundedLabel(rawLabel, maximumUTF8Bytes: 128)
                 else { continue }
-                let quota = try protobuf(quotaData)
-                guard let raw = quota[1]?.first?.fraction, raw.isFinite, (0...1).contains(raw) else { continue }
+                let quota = try fields[15]?.first?.bytes.map(protobuf) ?? [:]
+                let raw = quota[1]?.first?.fraction
+                var remaining = raw.flatMap { $0.isFinite && (0...1).contains($0) ? $0 * 100 : nil }
                 var reset: Date?
                 if let timestamp = quota[2]?.first?.bytes {
                     let time = try protobuf(timestamp)
@@ -433,18 +491,25 @@ struct AntigravityCLIQuotaReader {
                         let nanos = time[2]?.first?.integer ?? 0
                         if nanos < 1_000_000_000 { reset = Date(timeIntervalSince1970: Double(seconds) + Double(nanos) / 1e9) }
                     }
+                    if reset == nil { remaining = nil }
                 }
                 // An old reset time does not establish that the bucket refilled.
-                guard reset.map({ $0 > now }) ?? true else { continue }
-                windows.append(LocalCLIQuotaWindow(id: "cache-model-\(windows.count)", label: label, usedPercent: (1 - raw) * 100, resetsAt: reset))
+                if reset.map({ $0 <= now }) == true { remaining = nil }
+                // The legacy cache schema establishes the reported name only;
+                // never invent an API model ID from it or from array position.
+                try append(
+                    LocalCLIQuotaObservation(
+                        id: stableID("cached-model-name", [label]), label: label, scope: .model,
+                        modelID: nil, sharedPool: nil, remainingPercent: remaining, resetsAt: reset), to: &observations)
             }
         }
-        guard LocalCLIQuotaPresentation.validWindows(windows), cache.modifiedAt <= now.addingTimeInterval(60) else { throw Failure.invalid }
+        let windows = measuredWindows(observations)
+        guard observations.count <= 256, LocalCLIQuotaPresentation.validWindows(windows), cache.modifiedAt <= now.addingTimeInterval(60) else { throw Failure.invalid }
         return result(
             // Cache-file mtime is not the official quota observation time. Keep
             // history visible but never let it prove fresh quota or sign-in.
             state: .unavailable, at: cache.modifiedAt,
-            identity: identity, windows: windows, cached: true,
+            identity: identity, windows: windows, observations: observations, cached: true,
             code: "local_cli_antigravity_cached_quota")
     }
 

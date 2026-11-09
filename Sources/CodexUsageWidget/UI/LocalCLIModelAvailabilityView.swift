@@ -48,15 +48,16 @@ struct LocalCLIModelAvailabilityView: View {
     }
 
     var body: some View {
+        let projectedRows = rows
         DisclosureGroup(isExpanded: $expanded) {
-            if rows.isEmpty {
+            if projectedRows.isEmpty {
                 Text(LocalCLIModelAvailabilityPresentation.emptyLine(language))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.top, 4)
             } else {
                 VStack(alignment: .leading, spacing: 10) {
-                    ForEach(rows) { row in
+                    ForEach(projectedRows) { row in
                         VStack(alignment: .leading, spacing: 2) {
                             Text(row.modelID)
                                 .font(.caption.weight(.semibold))
@@ -103,7 +104,7 @@ struct LocalCLIModelAvailabilityView: View {
             }
         } label: {
             if compactLabel {
-                Text(LocalCLIModelAvailabilityPresentation.cardSummary(rows: rows, language: language))
+                Text(LocalCLIModelAvailabilityPresentation.cardSummary(rows: projectedRows, language: language))
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

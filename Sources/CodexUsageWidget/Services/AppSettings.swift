@@ -413,13 +413,44 @@ final class AppSettings: ObservableObject {
     @Published private(set) var statusItemPreferences: StatusItemPreferences
     @Published private(set) var globalShortcut: GlobalShortcut?
     @Published private(set) var globalShortcutError: GlobalShortcutError?
-    @Published var resetCreditAutoPreferences: CodexResetCreditAutoPreferences {
+    @Published private(set) var providerLaunchHistory: ProviderLaunchHistory {
         didSet {
-            if let data = try? JSONEncoder().encode(resetCreditAutoPreferences) {
-                defaults.set(data, forKey: "CodexManagerNext.resetCreditAuto.v1")
+            if let data = try? JSONEncoder().encode(providerLaunchHistory) {
+                defaults.set(data, forKey: ProviderLaunchHistory.storageKey)
             }
         }
     }
+
+    func applyProviderLaunchLibrary(_ library: ProviderLaunchLibrary) {
+        var history = providerLaunchHistory
+        if history.apply(library) { providerLaunchHistory = history }
+    }
+
+    func undoProviderLaunchLibrary() {
+        guard providerLaunchHistory.previous != nil else { return }
+        var history = providerLaunchHistory
+        history.undo()
+        providerLaunchHistory = history
+    }
+
+    @Published var resetCreditAutoPreferences: CodexResetCreditAutoPreferences {
+        didSet {
+            if let data = try? JSONEncoder().encode(resetCreditAutoPreferences) {
+                defaults.set(data, forKey: CodexResetCreditAutoPreferences.storageKey)
+            }
+        }
+    }
+
+    /// Automatic grants reach the runtime only after their persisted bytes read back.
+    @discardableResult
+    func saveResetCreditAutoPreferences(_ preferences: CodexResetCreditAutoPreferences) -> Bool {
+        guard preferences.isValid, let data = try? JSONEncoder().encode(preferences) else { return false }
+        defaults.set(data, forKey: CodexResetCreditAutoPreferences.storageKey)
+        guard defaults.synchronize(), defaults.data(forKey: CodexResetCreditAutoPreferences.storageKey) == data else { return false }
+        if resetCreditAutoPreferences != preferences { resetCreditAutoPreferences = preferences }
+        return true
+    }
+
     @Published var edgeDockShortcutError: String?
     var edgeDockShortcutRetry: (() -> Void)?
     var globalShortcutRegistration: ((GlobalShortcut) -> Result<Void, GlobalShortcutRegistrationFailure>)?
@@ -523,9 +554,8 @@ final class AppSettings: ObservableObject {
         skippedUpdateVersion = defaults.string(forKey: Self.skippedUpdateVersionKey)
         visibleRuntimeScopes = Self.storedVisibleRuntimeScopes(defaults: defaults)
         statusItemPreferences = StatusItemPreferencesStore.load(defaults: defaults)
-        resetCreditAutoPreferences =
-            defaults.data(forKey: "CodexManagerNext.resetCreditAuto.v1")
-            .flatMap { try? JSONDecoder().decode(CodexResetCreditAutoPreferences.self, from: $0) } ?? .init()
+        providerLaunchHistory = .load(defaults.data(forKey: ProviderLaunchHistory.storageKey))
+        resetCreditAutoPreferences = CodexResetCreditAutoPreferences.load(defaults.object(forKey: CodexResetCreditAutoPreferences.storageKey))
         let storedShortcut = GlobalShortcut.load(defaults: defaults)
         if let storedShortcut, storedShortcut.validationError != nil {
             globalShortcut = .default

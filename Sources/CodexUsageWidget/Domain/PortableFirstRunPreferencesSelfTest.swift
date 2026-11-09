@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 /// Also exercised by the isolated native fixture without starting the app.
@@ -68,7 +69,9 @@ enum PortableFirstRunPreferencesSelfTest {
             expect(
                 fresh.onboarding.status == .notStarted && fresh.onboarding.shouldPresent && !fresh.onboarding.existingUserMigrated
                     && fresh.setupProgress.shouldPresentAutomatically, "seeding never completes first-run onboarding")
-            expect(fresh.resetCreditAutoPreferences.authorizedAccounts.isEmpty, "display preset grants no automatic consumption permission")
+            expect(
+                fresh.resetCreditAutoPreferences.authorizedAccounts.isEmpty && fresh.resetCreditAutoPreferences.automaticallyEnrollNewAccounts,
+                "new defaults await identity verification before granting automatic redemption")
             let before = (defaults.persistentDomain(forName: suite) ?? [:]).filter { PortableFirstRunPreferences.values[$0.key] != nil }
             let reopened = settings(defaults)
             expect(
@@ -91,6 +94,42 @@ enum PortableFirstRunPreferencesSelfTest {
             expect(
                 overwritten.themeMode == .light && !overwritten.edgeDock.enabled && overwritten.workspaceGlass.opacity == 0
                     && overwritten.workspaceGlass.depth == 0 && overwritten.globalShortcut == nil, "reinstall preserves choices and explicit opt-outs")
+        }
+
+        isolated { defaults, _ in
+            let fresh = settings(defaults)
+            var decision = fresh.resetCreditAutoPreferences
+            decision.authorizedAccounts["synthetic-ready"] = String(repeating: "a", count: 64)
+            decision.setEnabled(false, profileID: "synthetic-off")
+            var publications = 0
+            let observation = fresh.$resetCreditAutoPreferences.dropFirst().sink { published in
+                publications += 1
+                expect(
+                    CodexResetCreditAutoPreferences.load(defaults.object(forKey: CodexResetCreditAutoPreferences.storageKey)) == published,
+                    "automatic decisions persist and read back before publication")
+            }
+            expect(fresh.saveResetCreditAutoPreferences(decision), "automatic preference save succeeds in isolated defaults")
+            expect(
+                publications == 1 && settings(defaults).resetCreditAutoPreferences == decision, "one publication and restart preserve enabled and explicitly disabled identities")
+            expect(fresh.saveResetCreditAutoPreferences(decision) && publications == 1, "saving an unchanged decision does not republish")
+            var invalid = decision
+            invalid.authorizedAccounts["invalid"] = "not-a-hash"
+            expect(
+                !fresh.saveResetCreditAutoPreferences(invalid) && settings(defaults).resetCreditAutoPreferences == decision,
+                "invalid automatic save leaves persisted choices unchanged")
+            observation.cancel()
+        }
+        isolated { defaults, _ in
+            defaults.set(Data(#"{"authorizedAccounts":{},"leadMinutes":30}"#.utf8), forKey: CodexResetCreditAutoPreferences.storageKey)
+            let legacy = settings(defaults).resetCreditAutoPreferences
+            expect(legacy.legacyMigrationPending && !legacy.shouldEnroll(profileID: "old"), "AppSettings keeps legacy missing decisions pending complete-profile migration")
+        }
+        for value: Any in [false, Data("{broken".utf8), Data(#"{"authorizedAccounts":{}}"#.utf8)] {
+            isolated { defaults, _ in
+                defaults.set(value, forKey: CodexResetCreditAutoPreferences.storageKey)
+                let loaded = settings(defaults).resetCreditAutoPreferences
+                expect(!loaded.automaticallyEnrollNewAccounts && loaded.authorizedAccounts.isEmpty, "AppSettings distinguishes damaged saved preferences from absent preferences")
+            }
         }
 
         for (key, value) in [

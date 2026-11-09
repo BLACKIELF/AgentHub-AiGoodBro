@@ -1,21 +1,134 @@
 import Darwin
 import Foundation
 
-/// Explicit per-account authorization; changing the verified identity never inherits it.
+/// Defaults bind once to a verified identity; changing that identity never inherits authorization.
 struct CodexResetCreditAutoPreferences: Codable, Equatable {
+    static let storageKey = "CodexManagerNext.resetCreditAuto.v1"
     var authorizedAccounts: [String: String] = [:]
-    var leadMinutes = 30
+    private(set) var disabledProfileIDs: Set<String> = []
+    private(set) var automaticallyEnrollNewAccounts = true
+    private(set) var legacyMigrationPending = false
+    static let defaultLeadMinutes = 30
+    static let leadPresets = [3, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440]
+    static let customLeadRange = 3...1440
+
+    var leadMinutes = Self.defaultLeadMinutes
+
+    init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, authorizedAccounts, disabledProfileIDs, automaticallyEnrollNewAccounts, legacyMigrationPending, leadMinutes
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try values.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        guard version == 1 || version == 2 else {
+            throw DecodingError.dataCorruptedError(forKey: .schemaVersion, in: values, debugDescription: "Unsupported reset preference version")
+        }
+        authorizedAccounts = try values.decode([String: String].self, forKey: .authorizedAccounts)
+        leadMinutes = try values.decode(Int.self, forKey: .leadMinutes)
+        if version == 1 {
+            // A missing legacy grant could be an explicit off. Classify the complete
+            // existing profile list before any new account may inherit the default.
+            legacyMigrationPending = true
+        } else {
+            disabledProfileIDs = try values.decode(Set<String>.self, forKey: .disabledProfileIDs)
+            automaticallyEnrollNewAccounts = try values.decode(Bool.self, forKey: .automaticallyEnrollNewAccounts)
+            legacyMigrationPending = try values.decode(Bool.self, forKey: .legacyMigrationPending)
+        }
+        guard isValid else {
+            throw DecodingError.dataCorruptedError(forKey: .authorizedAccounts, in: values, debugDescription: "Invalid reset preferences")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(2, forKey: .schemaVersion)
+        try values.encode(authorizedAccounts, forKey: .authorizedAccounts)
+        try values.encode(disabledProfileIDs.sorted(), forKey: .disabledProfileIDs)
+        try values.encode(automaticallyEnrollNewAccounts, forKey: .automaticallyEnrollNewAccounts)
+        try values.encode(legacyMigrationPending, forKey: .legacyMigrationPending)
+        try values.encode(leadMinutes, forKey: .leadMinutes)
+    }
+
+    static var failClosed: Self {
+        var value = Self()
+        value.automaticallyEnrollNewAccounts = false
+        return value
+    }
+
+    static func load(_ storedValue: Any?) -> Self {
+        guard let storedValue else { return Self() }
+        guard let data = storedValue as? Data, let value = try? JSONDecoder().decode(Self.self, from: data) else { return .failClosed }
+        return value
+    }
+
     var isValid: Bool {
-        (1...1440).contains(leadMinutes) && authorizedAccounts.count <= 1000
+        (1...1440).contains(leadMinutes) && authorizedAccounts.count + disabledProfileIDs.count <= 1000
+            && disabledProfileIDs.allSatisfy(Self.validProfileID)
+            && disabledProfileIDs.isDisjoint(with: authorizedAccounts.keys)
             && authorizedAccounts.allSatisfy {
-                !$0.key.isEmpty && $0.key.utf8.count <= 256
+                Self.validProfileID($0.key)
                     && $0.value.count == 64 && $0.value.allSatisfy { "0123456789abcdef".contains($0) }
             }
     }
+
+    private static func validProfileID(_ value: String) -> Bool { !value.isEmpty && value.utf8.count <= 256 }
+
+    func shouldEnroll(profileID: String) -> Bool {
+        isValid && automaticallyEnrollNewAccounts && !legacyMigrationPending && Self.validProfileID(profileID)
+            && authorizedAccounts[profileID] == nil && !disabledProfileIDs.contains(profileID)
+    }
+
+    /// Caller supplies one complete, successfully loaded profile list. Identities
+    /// must come from successful ChatGPT quota reads, never names or login guesses.
+    mutating func reconcile(profileIDs: Set<String>, verifiedAccountIDs: [String: String]) {
+        guard isValid, !profileIDs.isEmpty, profileIDs.count <= 1000, profileIDs.allSatisfy(Self.validProfileID) else { return }
+        var next = self
+        if next.legacyMigrationPending {
+            next.disabledProfileIDs.formUnion(profileIDs.filter { next.authorizedAccounts[$0] == nil })
+            next.legacyMigrationPending = false
+        }
+        for profileID in profileIDs.sorted() where next.shouldEnroll(profileID: profileID) {
+            guard let accountID = verifiedAccountIDs[profileID], !accountID.isEmpty else { continue }
+            next.authorizedAccounts[profileID] = DispatchActivityStore.hash(accountID)
+        }
+        if next.isValid { self = next }
+    }
+
+    mutating func setEnabled(_ enabled: Bool, profileID: String, accountID: String? = nil) {
+        guard isValid, Self.validProfileID(profileID) else { return }
+        var next = self
+        if enabled {
+            guard let accountID, !accountID.isEmpty else { return }
+            next.disabledProfileIDs.remove(profileID)
+            next.authorizedAccounts[profileID] = DispatchActivityStore.hash(accountID)
+        } else {
+            next.authorizedAccounts[profileID] = nil
+            next.disabledProfileIDs.insert(profileID)
+        }
+        if next.isValid { self = next }
+    }
+
+    mutating func disableAll(profileIDs: Set<String>) {
+        guard isValid, profileIDs.allSatisfy(Self.validProfileID) else { return }
+        var next = self
+        next.disabledProfileIDs.formUnion(profileIDs)
+        next.disabledProfileIDs.formUnion(next.authorizedAccounts.keys)
+        next.authorizedAccounts.removeAll()
+        if next.isValid { self = next }
+    }
+
     func permits(profileID: String, accountID: String) -> Bool {
         isValid && !profileID.isEmpty && !accountID.isEmpty && authorizedAccounts[profileID] == DispatchActivityStore.hash(accountID)
     }
     var leadSeconds: TimeInterval { Double(min(1440, max(1, leadMinutes))) * 60 }
+
+    func isWithinExpiryWindow(_ expiry: Date, now: Date) -> Bool {
+        let remaining = expiry.timeIntervalSince(now)
+        return remaining > 0 && remaining <= leadSeconds
+    }
 }
 
 /// Cancellation and the consume write share one lock, so revocation wins before admission.
