@@ -20,5 +20,7 @@ parts.append('final class CodexUsageReader {\n'+declaration(reader,'struct AppSe
    return Harness.rpc()
  }
 }\n''')
-parts.append('final class UsageStore {\nvar engineGeneration = TokenMonitorGeneration()\nvar engineCancellation: TokenMonitorCancellation?\nvar engineScanKey: String?\nvar engineQuotaCancellation: TokenMonitorCancellation?\nvar engineState = TokenMonitorEngineState()\n'+declaration(root+'Services/UsageStore.swift','func cancelStatisticsEngine()')+'\nvar profiles = [String]()\nvar accountManagerMessage: String?\nlet profileStore = SyntheticProfileStore()\n'+declaration(root+'Services/UsageStore.swift','func reorderProfiles(')+'\n}')
+# Keep this routing seam focused on independent cancellation. The full production
+# scan-key/cache contract is exercised by scripts/test-statistics-engine-cache.py.
+parts.append('final class UsageStore {\ntypealias StatisticsEngineScanKey = String\nvar engineGeneration = TokenMonitorGeneration()\nvar engineCancellation: TokenMonitorCancellation?\nvar engineScanKey: StatisticsEngineScanKey?\nvar engineLastGoodScanKey: StatisticsEngineScanKey?\nfunc currentStatisticsEngineScanKey() -> StatisticsEngineScanKey { \"synthetic-routing-scope\" }\nvar engineQuotaCancellation: TokenMonitorCancellation?\nvar engineState = TokenMonitorEngineState()\n'+declaration(root+'Services/UsageStore.swift','func cancelStatisticsEngine(')+'\nvar profiles = [String]()\nvar accountManagerMessage: String?\nlet profileStore = SyntheticProfileStore()\n'+declaration(root+'Services/UsageStore.swift','func reorderProfiles(')+'\n}')
 Path(sys.argv[1]).write_text('\n'.join(parts))
