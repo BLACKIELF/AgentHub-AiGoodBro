@@ -36,7 +36,7 @@ jobs:
         run: python3 scripts/ci_windows_changed.py
 
   macos:
-    runs-on: macos-14
+    runs-on: macos-15
     # Keep the complete native, renderer and proxy suite within one bounded job.
     timeout-minutes: 60
     steps:
